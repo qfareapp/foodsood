@@ -13,7 +13,7 @@
       "supportsTablet": false
     },
     "android": {
-      "googleServicesFile": "./google-services.json",
+      "googleServicesFile": "$GOOGLE_SERVICES_JSON",
       "adaptiveIcon": {
         "backgroundColor": "#2D9B6F"
       },
