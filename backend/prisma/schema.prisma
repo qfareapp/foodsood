@@ -1,0 +1,235 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ─── USER ────────────────────────────────────────────────────────────────────
+// role: "BUYER" | "CHEF" | "BOTH"
+model User {
+  id           String   @id @default(cuid()) @map("_id")
+  name         String
+  phone        String   @unique
+  email        String?  @unique
+  password     String
+  role         String   @default("BUYER")
+  avatar       String?
+  coverImage   String?
+  bio          String?
+  cookingStyle String?
+  location     String?
+  city         String?
+  lat          Float?
+  lng          Float?
+  rating       Float    @default(0)
+  ratingCount  Int      @default(0)
+  totalOrders  Int      @default(0)
+  isActive         Boolean  @default(true)
+  kitchenImages    String?
+  specialityDishes String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  requests        Request[]
+  chefDishes      ChefDish[]
+  quotes          Quote[]
+  ordersAsBuyer   Order[]        @relation("BuyerOrders")
+  ordersAsChef    Order[]        @relation("ChefOrders")
+  reviewsGiven    Review[]       @relation("ReviewsGiven")
+  reviewsReceived Review[]       @relation("ReviewsReceived")
+  addresses       Address[]
+  savedChefs      SavedChef[]    @relation("SavedBy")
+  savedByUsers    SavedChef[]    @relation("SavedChef")
+  fcmTokens       FcmToken[]
+  refreshTokens   RefreshToken[]
+}
+
+// ─── REQUEST ─────────────────────────────────────────────────────────────────
+// status: "OPEN" | "NEGOTIATING" | "PAYMENT_PENDING" | "COOKING" | "READY" | "COMPLETED" | "CANCELLED" | "EXPIRED"
+// preferences: JSON array string, e.g. '["bone-in","no-onion"]'
+model Request {
+  id          String    @id @default(cuid()) @map("_id")
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  category    String
+  dishName    String
+  qty         Float
+  people      Int
+  spiceLevel  String
+  preferences String    @default("[]")
+  delivery    String
+  budget      Int
+  targetChefId String?
+  notes       String?
+  status      String    @default("OPEN")
+  lat         Float?
+  lng         Float?
+  city        String?
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  quotes      Quote[]
+  order       Order?
+}
+
+model ChefDish {
+  id             String   @id @default(cuid()) @map("_id")
+  chefId         String
+  chef           User     @relation(fields: [chefId], references: [id])
+  emoji          String
+  dishName       String
+  cuisine        String
+  tags           String   @default("[]")
+  pricePerPlate  Int
+  plates         Int
+  portionType    String
+  portionValue   Int
+  portionUnit    String
+  readyInMinutes Int
+  notes          String?
+  imageUrl       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// ─── QUOTE ───────────────────────────────────────────────────────────────────
+// status: "PENDING" | "COUNTERED" | "ACCEPTED" | "REJECTED" | "WITHDRAWN"
+model Quote {
+  id           String   @id @default(cuid()) @map("_id")
+  requestId    String
+  request      Request  @relation(fields: [requestId], references: [id])
+  chefId       String
+  chef         User     @relation(fields: [chefId], references: [id])
+  price        Int
+  cookTime     String
+  delivery     String
+  message      String?
+  style        String?
+  status       String   @default("PENDING")
+  chefQuoteCount Int    @default(1)
+  buyerCounterCount Int @default(0)
+  counterOffer Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  order        Order?
+}
+
+// ─── ORDER ───────────────────────────────────────────────────────────────────
+// status: "CONFIRMED" | "COOKING" | "READY" | "OUT_FOR_DELIVERY" | "DELIVERED" | "CANCELLED"
+// paymentStatus: "HOLD" | "PAID" | "EXPIRED"
+model Order {
+  id          String   @id @default(cuid()) @map("_id")
+  requestId   String   @unique
+  request     Request  @relation(fields: [requestId], references: [id])
+  quoteId     String   @unique
+  quote       Quote    @relation(fields: [quoteId], references: [id])
+  buyerId     String
+  buyer       User     @relation("BuyerOrders", fields: [buyerId], references: [id])
+  chefId      String
+  chef        User     @relation("ChefOrders", fields: [chefId], references: [id])
+  finalPrice  Int
+  status      String   @default("CONFIRMED")
+  paymentStatus String @default("PAID")
+  holdUntil   DateTime?
+  paymentRef  String?
+  paidAt      DateTime?
+  cookingStartedAt DateTime?
+  readyAt     DateTime?
+  address     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  review      Review?
+}
+
+// ─── REVIEW ──────────────────────────────────────────────────────────────────
+model Review {
+  id         String   @id @default(cuid()) @map("_id")
+  orderId    String   @unique
+  order      Order    @relation(fields: [orderId], references: [id])
+  reviewerId String
+  reviewer   User     @relation("ReviewsGiven", fields: [reviewerId], references: [id])
+  chefId     String
+  chef       User     @relation("ReviewsReceived", fields: [chefId], references: [id])
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now())
+}
+
+// ─── ADDRESS ─────────────────────────────────────────────────────────────────
+model Address {
+  id      String  @id @default(cuid()) @map("_id")
+  userId  String
+  user    User    @relation(fields: [userId], references: [id])
+  label   String
+  address String
+  lat     Float?
+  lng     Float?
+}
+
+// ─── SAVED CHEF ──────────────────────────────────────────────────────────────
+model SavedChef {
+  id        String @id @default(cuid()) @map("_id")
+  savedById String
+  savedBy   User   @relation("SavedBy", fields: [savedById], references: [id])
+  chefId    String
+  chef      User   @relation("SavedChef", fields: [chefId], references: [id])
+
+  @@unique([savedById, chefId])
+}
+
+// ─── FCM TOKEN ───────────────────────────────────────────────────────────────
+model FcmToken {
+  id     String @id @default(cuid()) @map("_id")
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  token  String @unique
+}
+
+// ─── DISH OFFER ───────────────────────────────────────────────────────────────
+// status: "PENDING" | "COUNTERED" | "HOLD" | "PAID" | "REJECTED" | "EXPIRED"
+// lastOfferBy: "BUYER" | "CHEF" — whose turn to respond next
+// Buyer sends a direct offer on a chef's cooking dish (no auth required from buyer)
+model DishOffer {
+  id           String   @id @default(cuid()) @map("_id")
+  dishId       String
+  chefId       String
+  buyerName    String
+  buyerToken   String   // device UUID for identifying buyer without auth
+  plates       Int
+  offerPrice   Int      // current offer price from BUYER side
+  exactPriceRequested Boolean @default(false)
+  message      String?
+  status       String   @default("PENDING")  // PENDING | COUNTERED | HOLD | PAID | REJECTED | EXPIRED
+  counterPrice Int?     // chef's counter price per plate
+  counterNote  String?
+  agreedPrice  Int?
+  holdUntil    DateTime?
+  deliveryMode String?
+  orderStatus  String?
+  paymentRef   String?
+  paidAt       DateTime?
+  reviewRating Int?
+  reviewComment String?
+  reviewedAt   DateTime?
+  lastOfferBy  String   @default("BUYER")    // "BUYER" | "CHEF"
+  dishName     String   // denormalised from ChefDish at offer creation time
+  dishEmoji    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ─── REFRESH TOKEN ───────────────────────────────────────────────────────────
+model RefreshToken {
+  id        String   @id @default(cuid()) @map("_id")
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}

@@ -31,11 +31,18 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
+backend/.env
 .env*.local
+Chef/google-services.json
 
 # typescript
 *.tsbuildinfo
+*.bak
 
 # generated native folders
 /ios
 /android
+
+# local tooling
+.claude/

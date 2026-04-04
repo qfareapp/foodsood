@@ -1,0 +1,1867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NeighbourBites — Mobile App UI</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+body {
+  background: #F0EBE3;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  padding: 32px 16px 48px;
+}
+
+/* ── OUTER WRAPPER ── */
+.app-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 900px;
+}
+
+.wrapper-title {
+  font-family: 'Fraunces', serif;
+  font-size: 22px;
+  font-weight: 700;
+  color: #1A1209;
+  letter-spacing: -0.5px;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.wrapper-sub {
+  font-size: 13px;
+  color: #8A7F74;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+/* ── PHONES ROW ── */
+.phones-row {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+/* ── SINGLE PHONE SHELL ── */
+.phone {
+  width: 320px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.phone-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #8A7F74;
+  margin-bottom: 10px;
+}
+
+.phone-shell {
+  width: 320px;
+  height: 660px;
+  background: #1A1209;
+  border-radius: 44px;
+  padding: 10px;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.06),
+    0 30px 80px rgba(26,18,9,0.35),
+    0 8px 20px rgba(26,18,9,0.2);
+  position: relative;
+}
+
+.phone-screen {
+  width: 100%;
+  height: 100%;
+  border-radius: 36px;
+  overflow: hidden;
+  background: #FDFAF5;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* notch */
+.notch {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100px;
+  height: 28px;
+  background: #1A1209;
+  border-radius: 0 0 18px 18px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.notch-cam {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #2A2015;
+  border: 1px solid #3A3020;
+}
+
+/* ── STATUS BAR ── */
+.status-bar {
+  height: 44px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 0 20px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  z-index: 10;
+  position: relative;
+}
+
+.status-time { color: #1A1209; }
+.status-icons { display: flex; align-items: center; gap: 4px; color: #1A1209; font-size: 10px; }
+
+/* ── SCREEN CONTENT ── */
+.screen { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+.screen::-webkit-scrollbar { display: none; }
+
+/* ── BOTTOM NAV ── */
+.bottom-nav {
+  height: 72px;
+  background: #FFFFFF;
+  border-top: 1px solid #EDE8E0;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 0 8px 12px;
+  flex-shrink: 0;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.nav-icon { font-size: 20px; line-height: 1; }
+
+.nav-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #C0B8B0;
+}
+
+.nav-item.active .nav-label { color: #E85D26; }
+.nav-item.active .nav-icon { transform: scale(1.1); }
+
+/* ── CSS VARIABLES ── */
+:root {
+  --spice: #E85D26;
+  --turmeric: #F4A623;
+  --mint: #2D9B6F;
+  --ink: #1A1209;
+  --cream: #FDFAF5;
+  --white: #FFFFFF;
+  --warm-gray: #8A7F74;
+  --border: #EDE8E0;
+  --blush: #FDE8DC;
+  --pale-green: #E8F5EE;
+  --shadow: 0 4px 20px rgba(26,18,9,0.08);
+}
+
+/* ════════════════════════════════════════
+   SCREEN 1 — HOME / DISCOVER
+════════════════════════════════════════ */
+.s1-header {
+  padding: 0 18px 14px;
+  background: var(--white);
+}
+
+.s1-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.s1-greeting {
+  font-size: 11px;
+  color: var(--warm-gray);
+  font-weight: 500;
+}
+
+.s1-name {
+  font-family: 'Fraunces', serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+
+.avatar-btn {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--spice), #C84B1A);
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-weight: 700; font-size: 14px;
+  position: relative;
+}
+
+.avatar-badge {
+  position: absolute;
+  top: -2px; right: -2px;
+  width: 12px; height: 12px;
+  background: var(--turmeric);
+  border-radius: 50%;
+  border: 2px solid var(--white);
+}
+
+.location-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--cream);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.s1-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--cream);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 9px 13px;
+  margin-bottom: 0;
+}
+
+.s1-search span { font-size: 14px; }
+.s1-search-text { font-size: 13px; color: #BDB5AB; font-weight: 400; }
+
+/* POST CTA BANNER */
+.post-cta {
+  margin: 14px 18px;
+  background: linear-gradient(135deg, var(--ink) 0%, #2E2215 100%);
+  border-radius: 20px;
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  overflow: hidden;
+  position: relative;
+}
+
+.post-cta::before {
+  content: '🍳';
+  position: absolute;
+  right: 90px;
+  top: -8px;
+  font-size: 70px;
+  opacity: 0.08;
+}
+
+.post-cta-text { flex: 1; }
+
+.post-cta-eyebrow {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--turmeric);
+  margin-bottom: 4px;
+}
+
+.post-cta-title {
+  font-family: 'Fraunces', serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+  line-height: 1.25;
+}
+
+.post-cta-btn {
+  background: var(--spice);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* CATEGORIES */
+.section-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  margin-bottom: 10px;
+}
+
+.section-heading {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.see-all { font-size: 11px; color: var(--spice); font-weight: 600; }
+
+.cats-scroll {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px;
+  overflow-x: auto;
+  margin-bottom: 16px;
+  scrollbar-width: none;
+}
+
+.cats-scroll::-webkit-scrollbar { display: none; }
+
+.cat-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.cat-icon {
+  width: 52px; height: 52px;
+  border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  border: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.cat-chip.active .cat-icon { border-color: var(--spice); }
+.cat-chip.active .cat-name { color: var(--spice); }
+
+.cat-name { font-size: 10px; font-weight: 600; color: var(--warm-gray); }
+
+/* REQUEST CARDS */
+.req-card-s {
+  margin: 0 18px 12px;
+  background: var(--white);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+
+.req-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.req-food-row { display: flex; align-items: center; gap: 10px; }
+
+.req-emoji-s {
+  width: 44px; height: 44px;
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+}
+
+.req-food-name { font-weight: 700; font-size: 14px; color: var(--ink); }
+.req-food-by { font-size: 11px; color: var(--warm-gray); margin-top: 1px; }
+
+.status-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 9px;
+  border-radius: 6px;
+}
+
+.sb-open { background: #EEF9F4; color: var(--mint); }
+.sb-neg { background: #FEF9EE; color: #B07800; }
+.sb-cook { background: #EEF2FF; color: #4F6CF5; }
+
+.req-tags-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+
+.tiny-tag {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--cream);
+  color: var(--warm-gray);
+  border: 1px solid var(--border);
+}
+
+.req-bottom-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.req-price-s {
+  font-family: 'Fraunces', serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.req-price-label { font-size: 10px; color: var(--warm-gray); }
+
+.req-quotes-badge {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--warm-gray);
+}
+
+.quotes-count {
+  background: var(--spice);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+
+/* ════════════════════════════════════════
+   SCREEN 2 — POST REQUEST FLOW
+════════════════════════════════════════ */
+.s2-header {
+  padding: 0 18px 16px;
+  background: var(--white);
+  border-bottom: 1px solid var(--border);
+}
+
+.s2-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.back-btn {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  background: var(--cream);
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; cursor: pointer;
+}
+
+.s2-title {
+  font-family: 'Fraunces', serif;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.step-indicator { display: flex; gap: 5px; align-items: center; }
+
+.step-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.step-dot.active {
+  background: var(--spice);
+  width: 18px;
+  border-radius: 3px;
+}
+
+.s2-body { padding: 16px 18px; }
+
+.field-group { margin-bottom: 14px; }
+
+.field-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--warm-gray);
+  margin-bottom: 6px;
+  display: block;
+}
+
+.field-input {
+  width: 100%;
+  padding: 11px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 13px;
+  background: var(--cream);
+  color: var(--ink);
+  outline: none;
+}
+
+.field-input:focus { border-color: var(--spice); background: white; }
+
+.food-picker {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.food-pick-item {
+  border-radius: 12px;
+  border: 2px solid var(--border);
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  background: var(--cream);
+  transition: all 0.15s;
+}
+
+.food-pick-item.selected {
+  border-color: var(--spice);
+  background: var(--blush);
+}
+
+.food-pick-item.selected .fpname { color: var(--spice); }
+
+.fpemoji { font-size: 24px; }
+.fpname { font-size: 10px; font-weight: 700; color: var(--ink); }
+
+.chip-row { display: flex; gap: 7px; flex-wrap: wrap; }
+
+.s2-chip {
+  padding: 7px 13px;
+  border-radius: 20px;
+  border: 1.5px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--white);
+  color: var(--warm-gray);
+  transition: all 0.15s;
+}
+
+.s2-chip.on { border-color: var(--spice); color: var(--spice); background: var(--blush); }
+
+.qty-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.qty-btn {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
+  background: var(--cream);
+  font-size: 18px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.qty-val {
+  font-family: 'Fraunces', serif;
+  font-size: 20px;
+  font-weight: 700;
+  min-width: 30px;
+  text-align: center;
+}
+
+.qty-unit { font-size: 11px; color: var(--warm-gray); }
+
+.budget-display {
+  background: linear-gradient(135deg, var(--cream), #F5EFE7);
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  text-align: center;
+}
+
+.budget-rs { font-size: 11px; color: var(--warm-gray); margin-bottom: 4px; }
+
+.budget-amount {
+  font-family: 'Fraunces', serif;
+  font-size: 38px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.budget-slider {
+  width: 100%;
+  margin-top: 10px;
+  accent-color: var(--spice);
+  height: 4px;
+  border-radius: 2px;
+}
+
+.budget-range { display: flex; justify-content: space-between; font-size: 9px; color: var(--warm-gray); margin-top: 4px; }
+
+.next-btn {
+  width: 100%;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--spice);
+  color: white;
+  border: none;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(232,93,38,0.3);
+  margin-top: 8px;
+}
+
+/* ════════════════════════════════════════
+   SCREEN 3 — QUOTES / NEGOTIATE
+════════════════════════════════════════ */
+.s3-order-summary {
+  background: var(--ink);
+  margin: 0 18px 16px;
+  border-radius: 16px;
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.s3-order-emoji {
+  width: 46px; height: 46px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.1);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+}
+
+.s3-order-info { flex: 1; }
+.s3-order-name { font-family: 'Fraunces', serif; font-size: 16px; font-weight: 600; color: white; }
+.s3-order-sub { font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 2px; }
+
+.s3-budget-tag {
+  background: rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 8px 12px;
+  text-align: center;
+}
+
+.s3-budget-num {
+  font-family: 'Fraunces', serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--turmeric);
+}
+
+.s3-budget-label { font-size: 9px; color: rgba(255,255,255,0.4); font-weight: 600; text-transform: uppercase; }
+
+.quotes-heading { padding: 0 18px; margin-bottom: 10px; }
+
+.qh-row { display: flex; align-items: center; justify-content: space-between; }
+.qh-title { font-weight: 700; font-size: 13px; }
+.qh-count { font-size: 11px; color: var(--warm-gray); }
+
+.quote-card {
+  margin: 0 18px 10px;
+  background: var(--white);
+  border-radius: 16px;
+  border: 1.5px solid var(--border);
+  padding: 14px;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+
+.quote-card.best-quote {
+  border-color: var(--mint);
+  background: #FBFFFD;
+}
+
+.qc-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.qc-chef { display: flex; align-items: center; gap: 10px; }
+
+.chef-av {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 800; color: white;
+  font-family: 'Fraunces', serif;
+}
+
+.chef-avname { font-weight: 700; font-size: 13px; }
+.chef-avmeta { font-size: 10px; color: var(--warm-gray); margin-top: 1px; }
+
+.qc-price {
+  font-family: 'Fraunces', serif;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.qc-best-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--mint);
+  background: #C8F0DC;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.qc-mid {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.qc-detail {
+  background: var(--cream);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 10px;
+  color: var(--warm-gray);
+}
+
+.qc-detail strong { color: var(--ink); display: block; font-size: 12px; margin-bottom: 1px; }
+
+.qc-actions { display: flex; gap: 8px; }
+
+.btn-accept-q {
+  flex: 1;
+  padding: 9px;
+  border-radius: 10px;
+  background: var(--mint);
+  color: white;
+  border: none;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-counter-q {
+  flex: 1;
+  padding: 9px;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--spice);
+  border: 1.5px solid var(--spice);
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.raise-strip {
+  margin: 0 18px 12px;
+  background: var(--blush);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.raise-text { font-size: 11px; color: var(--spice); font-weight: 600; }
+.raise-sub { font-size: 10px; color: #E89070; margin-top: 1px; }
+
+.raise-btn {
+  padding: 7px 13px;
+  border-radius: 8px;
+  background: var(--spice);
+  color: white;
+  border: none;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ════════════════════════════════════════
+   SCREEN 4 — ORDER TRACKING
+════════════════════════════════════════ */
+.map-placeholder {
+  height: 180px;
+  background: linear-gradient(180deg, #E4EDDC 0%, #D4E4C8 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.map-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.4) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.4) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.map-road-h {
+  position: absolute;
+  left: 0; right: 0;
+  height: 8px;
+  background: rgba(255,255,255,0.7);
+  border-radius: 4px;
+}
+
+.map-road-v {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 8px;
+  background: rgba(255,255,255,0.7);
+  border-radius: 4px;
+}
+
+.map-chef-pin {
+  position: absolute;
+  bottom: 65px;
+  left: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.pin-bubble {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: var(--spice);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  border: 3px solid white;
+  box-shadow: 0 4px 12px rgba(232,93,38,0.4);
+}
+
+.pin-tail {
+  width: 2px; height: 8px;
+  background: var(--spice);
+}
+
+.map-home-pin {
+  position: absolute;
+  bottom: 40px;
+  right: 70px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.home-bubble {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: #4F6CF5;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px;
+  border: 3px solid white;
+  box-shadow: 0 4px 12px rgba(79,108,245,0.4);
+}
+
+.map-dist-label {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: white;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+
+.s4-card {
+  margin: -20px 18px 0;
+  background: white;
+  border-radius: 20px 20px 16px 16px;
+  box-shadow: 0 -4px 20px rgba(26,18,9,0.08);
+  padding: 18px;
+  position: relative;
+  z-index: 2;
+}
+
+.s4-drag-handle {
+  width: 36px; height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin: 0 auto 14px;
+}
+
+.s4-chef-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.s4-chef-av {
+  width: 46px; height: 46px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 800; color: white;
+  font-family: 'Fraunces', serif;
+  background: var(--spice);
+}
+
+.s4-chef-name { font-weight: 700; font-size: 14px; }
+.s4-chef-sub { font-size: 11px; color: var(--warm-gray); margin-top: 2px; }
+
+.s4-chef-actions { margin-left: auto; display: flex; gap: 8px; }
+
+.icon-btn {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
+  background: var(--cream);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; cursor: pointer;
+}
+
+/* PROGRESS STEPPER */
+.progress-stepper {
+  display: flex;
+  align-items: flex-start;
+  position: relative;
+  padding: 4px 0 16px;
+}
+
+.step-col { display: flex; flex-direction: column; align-items: center; flex: 1; }
+
+.step-circle {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px;
+  margin-bottom: 5px;
+  border: 2px solid var(--border);
+  background: white;
+  z-index: 1;
+  position: relative;
+}
+
+.step-circle.done { background: var(--mint); border-color: var(--mint); color: white; }
+.step-circle.current { background: var(--spice); border-color: var(--spice); color: white; animation: pulse-step 2s infinite; }
+
+@keyframes pulse-step {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(232,93,38,0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(232,93,38,0); }
+}
+
+.step-line-wrap {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  padding-top: 13px;
+}
+
+.step-line {
+  height: 2px;
+  width: 100%;
+  background: var(--border);
+  border-radius: 1px;
+}
+
+.step-line.done { background: var(--mint); }
+
+.step-label { font-size: 9px; color: var(--warm-gray); text-align: center; font-weight: 500; line-height: 1.2; }
+.step-label.current { color: var(--spice); font-weight: 700; }
+
+.eta-box {
+  background: var(--cream);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.eta-left { display: flex; align-items: center; gap: 8px; }
+.eta-icon { font-size: 20px; }
+.eta-label { font-size: 10px; color: var(--warm-gray); }
+.eta-time { font-family: 'Fraunces', serif; font-size: 16px; font-weight: 700; color: var(--ink); }
+
+.eta-right { text-align: right; }
+.eta-dist { font-size: 10px; color: var(--warm-gray); }
+.eta-distval { font-weight: 700; font-size: 13px; color: var(--ink); }
+
+.order-detail-strip {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.odc {
+  flex: 1;
+  background: var(--cream);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 10px;
+  color: var(--warm-gray);
+}
+
+.odc strong { display: block; font-size: 13px; color: var(--ink); margin-bottom: 2px; }
+
+.delivery-opts { display: flex; gap: 8px; }
+
+.del-btn {
+  flex: 1;
+  padding: 10px 8px;
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
+  background: var(--cream);
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.del-btn.selected { background: var(--ink); color: white; border-color: var(--ink); }
+
+/* ════════════════════════════════
+   ANIMATIONS
+════════════════════════════════ */
+@keyframes fadeUp {
+  from { opacity:0; transform: translateY(16px); }
+  to { opacity:1; transform: translateY(0); }
+}
+
+.phone:nth-child(1) { animation: fadeUp 0.5s ease both; }
+.phone:nth-child(2) { animation: fadeUp 0.5s 0.1s ease both; }
+.phone:nth-child(3) { animation: fadeUp 0.5s 0.2s ease both; }
+.phone:nth-child(4) { animation: fadeUp 0.5s 0.3s ease both; }
+
+/* SCROLLABLE INDICATOR */
+.scroll-hint {
+  font-size: 9px;
+  color: rgba(255,255,255,0.3);
+  text-align: center;
+  margin-top: 4px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* Profile screen */
+.profile-hero {
+  padding: 20px 18px 16px;
+  background: linear-gradient(180deg, #FDE8DC 0%, #FDFAF5 100%);
+  text-align: center;
+}
+
+.profile-av {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--spice), #C84B1A);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Fraunces', serif;
+  font-size: 26px; font-weight: 700; color: white;
+  margin: 0 auto 10px;
+  box-shadow: 0 6px 20px rgba(232,93,38,0.3);
+}
+
+.profile-name { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 700; }
+.profile-loc { font-size: 11px; color: var(--warm-gray); margin-top: 4px; }
+
+.profile-stats {
+  display: flex;
+  gap: 0;
+  margin: 14px 18px;
+  background: white;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.pstat {
+  flex: 1;
+  padding: 12px 8px;
+  text-align: center;
+  border-right: 1px solid var(--border);
+}
+
+.pstat:last-child { border-right: none; }
+
+.pstat-num { font-family: 'Fraunces', serif; font-size: 18px; font-weight: 700; color: var(--ink); }
+.pstat-label { font-size: 9px; color: var(--warm-gray); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+
+.menu-group { margin: 0 18px 14px; }
+
+.menu-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--warm-gray);
+  margin-bottom: 8px;
+  padding-left: 2px;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.menu-left { display: flex; align-items: center; gap: 10px; }
+
+.menu-icon {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px;
+}
+
+.menu-item-label { font-size: 13px; font-weight: 600; }
+.menu-item-sub { font-size: 10px; color: var(--warm-gray); margin-top: 1px; }
+.menu-arrow { font-size: 12px; color: var(--warm-gray); }
+
+.become-chef-banner {
+  margin: 0 18px 16px;
+  background: linear-gradient(135deg, #1A1209, #2E2215);
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bcb-title { font-family: 'Fraunces', serif; font-size: 14px; font-weight: 600; color: white; }
+.bcb-sub { font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 2px; }
+
+.bcb-btn {
+  padding: 8px 13px;
+  border-radius: 8px;
+  background: var(--turmeric);
+  color: white;
+  border: none;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+</style>
+</head>
+<body>
+
+<div class="app-wrapper">
+  <div class="wrapper-title">NeighbourBites · Customer App</div>
+  <div class="wrapper-sub">Tap through 4 key screens of the mobile experience</div>
+
+  <div class="phones-row">
+
+    <!-- ══════════════════════════
+         PHONE 1 — HOME / DISCOVER
+    ════════════════════════════ -->
+    <div class="phone">
+      <div class="phone-label">1 — Home</div>
+      <div class="phone-shell">
+        <div class="phone-screen">
+          <div class="notch"><div class="notch-cam"></div><div class="notch-cam" style="width:10px;height:4px;border-radius:2px;background:#181208"></div></div>
+          <div class="status-bar" style="background:#fff">
+            <span class="status-time">9:41</span>
+            <div class="status-icons">📶 WiFi 🔋</div>
+          </div>
+
+          <div class="screen">
+            <!-- Header -->
+            <div class="s1-header">
+              <div class="s1-top">
+                <div>
+                  <div class="s1-greeting">Good evening,</div>
+                  <div class="s1-name">Rohan 👋</div>
+                </div>
+                <div class="avatar-btn">R<div class="avatar-badge"></div></div>
+              </div>
+              <div class="location-pill" style="margin-bottom:10px">📍 Baharampur, West Bengal ▾</div>
+              
+            </div>
+
+            <!-- Post CTA -->
+            <div class="post-cta">
+              <div class="post-cta-text">
+                <div class="post-cta-eyebrow">🍽 New Request</div>
+                <div class="post-cta-title">Hungry? Post a<br>craving in 30 sec</div>
+              </div>
+              <button class="post-cta-btn">Post Now →</button>
+            </div>
+
+            <!-- Categories -->
+            <div class="section-row">
+              <div class="section-heading">Categories</div>
+              <div class="see-all">See all</div>
+            </div>
+
+            <div class="cats-scroll">
+              <div class="cat-chip active">
+                <div class="cat-icon" style="background:#FDE8DC">🍗</div>
+                <div class="cat-name">Chicken</div>
+              </div>
+              <div class="cat-chip">
+                <div class="cat-icon" style="background:#E8F5EE">🥬</div>
+                <div class="cat-name">Veg</div>
+              </div>
+              <div class="cat-chip">
+                <div class="cat-icon" style="background:#FEF9EE">🍚</div>
+                <div class="cat-name">Rice</div>
+              </div>
+              <div class="cat-chip">
+                <div class="cat-icon" style="background:#EEF2FF">🍰</div>
+                <div class="cat-name">Desserts</div>
+              </div>
+              <div class="cat-chip">
+                <div class="cat-icon" style="background:#F3E8FF">🍜</div>
+                <div class="cat-name">Noodles</div>
+              </div>
+              <div class="cat-chip">
+                <div class="cat-icon" style="background:#FEEFEE">🥩</div>
+                <div class="cat-name">Mutton</div>
+              </div>
+            </div>
+
+            <!-- Active Requests -->
+            <div class="section-row">
+              <div class="section-heading">Live Requests Near You</div>
+              <div class="see-all">See all</div>
+            </div>
+
+            <div class="req-card-s">
+              <div class="req-top-row">
+                <div class="req-food-row">
+                  <div class="req-emoji-s" style="background:#FDE8DC">🍗</div>
+                  <div>
+                    <div class="req-food-name">Chicken Curry</div>
+                    <div class="req-food-by">by You · 20 min ago</div>
+                  </div>
+                </div>
+                <span class="status-badge sb-neg">Negotiating</span>
+              </div>
+              <div class="req-tags-row">
+                <span class="tiny-tag">🌶 Extra Spicy</span>
+                <span class="tiny-tag">1 kg</span>
+                <span class="tiny-tag">Bone-in</span>
+              </div>
+              <div class="req-bottom-row">
+                <div>
+                  <div class="req-price-s">₹300</div>
+                  <div class="req-price-label">Your budget</div>
+                </div>
+                <div class="req-quotes-badge">
+                  <span class="quotes-count">3</span> quotes received
+                </div>
+              </div>
+            </div>
+
+            <div class="req-card-s">
+              <div class="req-top-row">
+                <div class="req-food-row">
+                  <div class="req-emoji-s" style="background:#E8F5EE">🥘</div>
+                  <div>
+                    <div class="req-food-name">Dal Makhani</div>
+                    <div class="req-food-by">Meena R. · 0.6 km</div>
+                  </div>
+                </div>
+                <span class="status-badge sb-open">Open</span>
+              </div>
+              <div class="req-tags-row">
+                <span class="tiny-tag">🌱 No Onion</span>
+                <span class="tiny-tag">1L</span>
+                <span class="tiny-tag">Jain</span>
+              </div>
+              <div class="req-bottom-row">
+                <div>
+                  <div class="req-price-s">₹200</div>
+                  <div class="req-price-label">Budget</div>
+                </div>
+                <div class="req-quotes-badge">
+                  <span class="quotes-count" style="background:#2D9B6F">0</span> quotes
+                </div>
+              </div>
+            </div>
+
+            <div style="height:16px"></div>
+          </div>
+
+          <!-- Bottom Nav -->
+          <div class="bottom-nav">
+            <div class="nav-item active"><div class="nav-icon">🏠</div><div class="nav-label">Home</div></div>
+            <div class="nav-item"><div class="nav-icon">🔍</div><div class="nav-label">Explore</div></div>
+            <div class="nav-item"><div class="nav-icon">🍽</div><div class="nav-label">Request</div></div>
+            <div class="nav-item"><div class="nav-icon">📦</div><div class="nav-label">Orders</div></div>
+            <div class="nav-item"><div class="nav-icon">👤</div><div class="nav-label">Profile</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll-hint">↕ Scroll inside</div>
+    </div>
+
+    <!-- ══════════════════════════
+         PHONE 2 — POST REQUEST
+    ════════════════════════════ -->
+    <div class="phone">
+      <div class="phone-label">2 — Post Request</div>
+      <div class="phone-shell">
+        <div class="phone-screen">
+          <div class="notch"><div class="notch-cam"></div><div class="notch-cam" style="width:10px;height:4px;border-radius:2px;background:#181208"></div></div>
+          <div class="status-bar" style="background:#fff">
+            <span class="status-time">9:43</span>
+            <div class="status-icons">📶 WiFi 🔋</div>
+          </div>
+
+          <!-- Header -->
+          <div class="s2-header">
+            <div class="s2-top">
+              <div class="back-btn">←</div>
+              <div class="s2-title">Post a Request</div>
+              <div class="step-indicator">
+                <div class="step-dot active"></div>
+                <div class="step-dot"></div>
+                <div class="step-dot"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="screen" style="padding-bottom:8px">
+            <div class="s2-body">
+
+              <div class="field-group">
+                <label class="field-label">What are you craving?</label>
+                <div class="food-picker">
+                  <div class="food-pick-item selected">
+                    <div class="fpemoji">🍗</div>
+                    <div class="fpname">Chicken</div>
+                  </div>
+                  <div class="food-pick-item">
+                    <div class="fpemoji">🥩</div>
+                    <div class="fpname">Mutton</div>
+                  </div>
+                  <div class="food-pick-item">
+                    <div class="fpemoji">🍚</div>
+                    <div class="fpname">Biryani</div>
+                  </div>
+                  <div class="food-pick-item">
+                    <div class="fpemoji">🥘</div>
+                    <div class="fpname">Dal</div>
+                  </div>
+                  <div class="food-pick-item">
+                    <div class="fpemoji">🍰</div>
+                    <div class="fpname">Dessert</div>
+                  </div>
+                  <div class="food-pick-item">
+                    <div class="fpemoji">✏️</div>
+                    <div class="fpname">Custom</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">Dish Name</label>
+                <input class="field-input" type="text" value="Chicken Curry" readonly>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">Quantity</label>
+                <div class="qty-row">
+                  <div class="qty-btn">−</div>
+                  <div class="qty-val">1</div>
+                  <div class="qty-unit">kg</div>
+                  <div class="qty-btn">+</div>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">No. of People</label>
+                <div class="qty-row">
+                  <div class="qty-btn">−</div>
+                  <div class="qty-val">2</div>
+                  <div class="qty-unit">people</div>
+                  <div class="qty-btn">+</div>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">Spice Level</label>
+                <div class="chip-row">
+                  <div class="s2-chip">🌿 Mild</div>
+                  <div class="s2-chip">🌶 Medium</div>
+                  <div class="s2-chip on">🔥 Extra</div>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">Preferences</label>
+                <div class="chip-row">
+                  <div class="s2-chip on">🦴 Bone-in</div>
+                  <div class="s2-chip">🍗 Boneless</div>
+                  <div class="s2-chip">🥚 No Egg</div>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">Your Budget</label>
+                <div class="budget-display">
+                  <div class="budget-rs">Set your maximum price</div>
+                  <div class="budget-amount">₹300</div>
+                  <input class="budget-slider" type="range" min="100" max="1000" value="300">
+                  <div class="budget-range"><span>₹100</span><span>₹1,000</span></div>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">Delivery Option</label>
+                <div class="chip-row">
+                  <div class="s2-chip on">🚶 Self Pickup</div>
+                  <div class="s2-chip">🛵 Home Delivery</div>
+                </div>
+              </div>
+
+              <button class="next-btn">Find Chefs & Post Request 🍗</button>
+            </div>
+          </div>
+
+          <div class="bottom-nav">
+            <div class="nav-item"><div class="nav-icon">🏠</div><div class="nav-label">Home</div></div>
+            <div class="nav-item"><div class="nav-icon">🔍</div><div class="nav-label">Explore</div></div>
+            <div class="nav-item active"><div class="nav-icon">🍽</div><div class="nav-label">Request</div></div>
+            <div class="nav-item"><div class="nav-icon">📦</div><div class="nav-label">Orders</div></div>
+            <div class="nav-item"><div class="nav-icon">👤</div><div class="nav-label">Profile</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll-hint">↕ Scroll inside</div>
+    </div>
+
+    <!-- ══════════════════════════
+         PHONE 3 — QUOTES / NEGOTIATE
+    ════════════════════════════ -->
+    <div class="phone">
+      <div class="phone-label">3 — Quotes & Negotiate</div>
+      <div class="phone-shell">
+        <div class="phone-screen">
+          <div class="notch"><div class="notch-cam"></div><div class="notch-cam" style="width:10px;height:4px;border-radius:2px;background:#181208"></div></div>
+          <div class="status-bar" style="background:#fff">
+            <span class="status-time">9:58</span>
+            <div class="status-icons">📶 WiFi 🔋</div>
+          </div>
+
+          <!-- Header -->
+          <div class="s2-header">
+            <div class="s2-top">
+              <div class="back-btn">←</div>
+              <div class="s2-title">Chef Quotes</div>
+              <div style="font-size:11px;color:var(--spice);font-weight:700">3 New</div>
+            </div>
+          </div>
+
+          <div class="screen" style="padding-top:14px;padding-bottom:8px">
+
+            <!-- Order Summary -->
+            <div class="s3-order-summary">
+              <div class="s3-order-emoji">🍗</div>
+              <div class="s3-order-info">
+                <div class="s3-order-name">Chicken Curry</div>
+                <div class="s3-order-sub">1kg · Extra Spicy · Bone-in · 2 people</div>
+              </div>
+              <div class="s3-budget-tag">
+                <div class="s3-budget-num">₹300</div>
+                <div class="s3-budget-label">Budget</div>
+              </div>
+            </div>
+
+            <div class="quotes-heading">
+              <div class="qh-row">
+                <div class="qh-title">Quotes Received</div>
+                <div class="qh-count">3 of 5 chefs responded</div>
+              </div>
+            </div>
+
+            <!-- Quote 1 — Best -->
+            <div class="quote-card best-quote">
+              <div class="qc-top">
+                <div class="qc-chef">
+                  <div class="chef-av" style="background:#E85D26">P</div>
+                  <div>
+                    <div class="chef-avname">Priya Mehta <span class="qc-best-label">Best</span></div>
+                    <div class="chef-avmeta">⭐ 4.9 · 124 orders · 0.4 km</div>
+                  </div>
+                </div>
+                <div class="qc-price">₹300</div>
+              </div>
+              <div class="qc-mid">
+                <div class="qc-detail"><strong>~2 hrs</strong>Cook Time</div>
+                <div class="qc-detail"><strong>Pickup</strong>Available</div>
+                <div class="qc-detail"><strong>Bengali</strong>Style</div>
+              </div>
+              <div class="qc-actions">
+                <button class="btn-accept-q">✓ Accept ₹300</button>
+                <button class="btn-counter-q">Counter Offer</button>
+              </div>
+            </div>
+
+            <!-- Quote 2 -->
+            <div class="quote-card">
+              <div class="qc-top">
+                <div class="qc-chef">
+                  <div class="chef-av" style="background:#2D9B6F">R</div>
+                  <div>
+                    <div class="chef-avname">Ranjit Dubey</div>
+                    <div class="chef-avmeta">⭐ 4.7 · 89 orders · 0.8 km</div>
+                  </div>
+                </div>
+                <div class="qc-price">₹320</div>
+              </div>
+              <div class="qc-mid">
+                <div class="qc-detail"><strong>~2.5 hr</strong>Cook Time</div>
+                <div class="qc-detail"><strong>Delivery</strong>Available</div>
+              </div>
+              <div class="qc-actions">
+                <button class="btn-accept-q" style="background:#4F6CF5">✓ Accept ₹320</button>
+                <button class="btn-counter-q">Counter</button>
+              </div>
+            </div>
+
+            <!-- Quote 3 -->
+            <div class="quote-card">
+              <div class="qc-top">
+                <div class="qc-chef">
+                  <div class="chef-av" style="background:#4F6CF5">S</div>
+                  <div>
+                    <div class="chef-avname">Sunita Krishnan</div>
+                    <div class="chef-avmeta">⭐ 4.8 · 201 orders · 1.1 km</div>
+                  </div>
+                </div>
+                <div class="qc-price">₹350</div>
+              </div>
+              <div class="qc-mid">
+                <div class="qc-detail"><strong>~2 hr</strong>Cook Time</div>
+                <div class="qc-detail"><strong>Both</strong>Options</div>
+              </div>
+              <div class="qc-actions">
+                <button class="btn-accept-q" style="background:#7C3AED">✓ Accept ₹350</button>
+                <button class="btn-counter-q" style="color:#7C3AED;border-color:#7C3AED">Counter</button>
+              </div>
+            </div>
+
+            <!-- Raise Budget Strip -->
+            <div class="raise-strip">
+              <div>
+                <div class="raise-text">Not satisfied? Raise your budget</div>
+                <div class="raise-sub">More chefs will respond with better offers</div>
+              </div>
+              <button class="raise-btn">↑ Raise</button>
+            </div>
+
+            <div style="height:8px"></div>
+          </div>
+
+          <div class="bottom-nav">
+            <div class="nav-item"><div class="nav-icon">🏠</div><div class="nav-label">Home</div></div>
+            <div class="nav-item"><div class="nav-icon">🔍</div><div class="nav-label">Explore</div></div>
+            <div class="nav-item"><div class="nav-icon">🍽</div><div class="nav-label">Request</div></div>
+            <div class="nav-item active"><div class="nav-icon">📦</div><div class="nav-label">Orders</div></div>
+            <div class="nav-item"><div class="nav-icon">👤</div><div class="nav-label">Profile</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll-hint">↕ Scroll inside</div>
+    </div>
+
+    <!-- ══════════════════════════
+         PHONE 4 — ORDER TRACKING
+    ════════════════════════════ -->
+    <div class="phone">
+      <div class="phone-label">4 — Live Tracking</div>
+      <div class="phone-shell">
+        <div class="phone-screen">
+          <div class="notch"><div class="notch-cam"></div><div class="notch-cam" style="width:10px;height:4px;border-radius:2px;background:#181208"></div></div>
+          <div class="status-bar" style="position:absolute;top:0;left:0;right:0;background:transparent;z-index:10">
+            <span class="status-time" style="color:white;text-shadow:0 1px 3px rgba(0,0,0,0.3)">9:41</span>
+            <div class="status-icons" style="color:white;text-shadow:0 1px 3px rgba(0,0,0,0.3)">📶 WiFi 🔋</div>
+          </div>
+
+          <div class="screen" style="padding-bottom:0">
+            <!-- MAP -->
+            <div class="map-placeholder">
+              <div class="map-grid"></div>
+              <div class="map-road-h" style="top:45%"></div>
+              <div class="map-road-h" style="top:25%"></div>
+              <div class="map-road-v" style="left:40%"></div>
+              <div class="map-road-v" style="left:65%"></div>
+
+              <div class="map-chef-pin">
+                <div class="pin-bubble">🧑‍🍳</div>
+                <div class="pin-tail"></div>
+              </div>
+
+              <div class="map-home-pin">
+                <div class="home-bubble">🏠</div>
+                <div class="pin-tail" style="background:#4F6CF5"></div>
+              </div>
+
+              <div class="map-dist-label">📍 0.4 km away</div>
+
+              <!-- Route line (SVG) -->
+              <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M 118 110 L 118 130 L 240 130 L 240 145" stroke="#E85D26" stroke-width="3" fill="none" stroke-dasharray="6,4" stroke-linecap="round"/>
+              </svg>
+            </div>
+
+            <!-- Bottom Sheet -->
+            <div class="s4-card">
+              <div class="s4-drag-handle"></div>
+
+              <!-- Chef Row -->
+              <div class="s4-chef-row">
+                <div class="s4-chef-av">P</div>
+                <div>
+                  <div class="s4-chef-name">Priya Mehta is cooking 🔥</div>
+                  <div class="s4-chef-sub">⭐ 4.9 · Chicken Curry · ₹300</div>
+                </div>
+                <div class="s4-chef-actions">
+                  <div class="icon-btn">📞</div>
+                  <div class="icon-btn">💬</div>
+                </div>
+              </div>
+
+              <!-- Progress -->
+              <div class="progress-stepper">
+                <div class="step-col">
+                  <div class="step-circle done">✓</div>
+                  <div class="step-label">Ordered</div>
+                </div>
+                <div class="step-line-wrap"><div class="step-line done"></div></div>
+                <div class="step-col">
+                  <div class="step-circle done">✓</div>
+                  <div class="step-label">Confirmed</div>
+                </div>
+                <div class="step-line-wrap"><div class="step-line done"></div></div>
+                <div class="step-col">
+                  <div class="step-circle current">🍳</div>
+                  <div class="step-label current">Cooking</div>
+                </div>
+                <div class="step-line-wrap"><div class="step-line"></div></div>
+                <div class="step-col">
+                  <div class="step-circle">📦</div>
+                  <div class="step-label">Ready</div>
+                </div>
+                <div class="step-line-wrap"><div class="step-line"></div></div>
+                <div class="step-col">
+                  <div class="step-circle">🏠</div>
+                  <div class="step-label">Done</div>
+                </div>
+              </div>
+
+              <!-- ETA Box -->
+              <div class="eta-box">
+                <div class="eta-left">
+                  <div class="eta-icon">⏱</div>
+                  <div>
+                    <div class="eta-label">Estimated ready by</div>
+                    <div class="eta-time">7:30 PM · ~45 min left</div>
+                  </div>
+                </div>
+                <div class="eta-right">
+                  <div class="eta-dist">Chef is</div>
+                  <div class="eta-distval">0.4 km</div>
+                </div>
+              </div>
+
+              <!-- Order Details -->
+              <div class="order-detail-strip">
+                <div class="odc"><strong>🍗 Chicken</strong>Curry · 1 kg</div>
+                <div class="odc"><strong>🌶 Extra</strong>Spicy</div>
+                <div class="odc"><strong>🦴 Bone</strong>in</div>
+              </div>
+
+              <!-- Pickup / Delivery -->
+              <div class="delivery-opts">
+                <button class="del-btn selected">🚶 Pickup</button>
+                <button class="del-btn">🛵 Delivery</button>
+              </div>
+            </div>
+
+            <div style="height:8px;background:white"></div>
+          </div>
+
+          <div class="bottom-nav">
+            <div class="nav-item"><div class="nav-icon">🏠</div><div class="nav-label">Home</div></div>
+            <div class="nav-item"><div class="nav-icon">🔍</div><div class="nav-label">Explore</div></div>
+            <div class="nav-item"><div class="nav-icon">🍽</div><div class="nav-label">Request</div></div>
+            <div class="nav-item active"><div class="nav-icon">📦</div><div class="nav-label">Orders</div></div>
+            <div class="nav-item"><div class="nav-icon">👤</div><div class="nav-label">Profile</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll-hint">↕ Scroll inside</div>
+    </div>
+
+  </div><!-- phones-row -->
+
+  <!-- ── SECOND ROW: Profile Screen (centered) ── -->
+  <div class="phones-row" style="margin-top:8px">
+    <div class="phone">
+      <div class="phone-label">5 — Profile & Orders</div>
+      <div class="phone-shell">
+        <div class="phone-screen">
+          <div class="notch"><div class="notch-cam"></div><div class="notch-cam" style="width:10px;height:4px;border-radius:2px;background:#181208"></div></div>
+          <div class="status-bar" style="background:#FDE8DC">
+            <span class="status-time">9:41</span>
+            <div class="status-icons">📶 WiFi 🔋</div>
+          </div>
+
+          <div class="screen">
+            <div class="profile-hero">
+              <div class="profile-av">R</div>
+              <div class="profile-name">Rohan Chakraborty</div>
+              <div class="profile-loc">📍 Baharampur, West Bengal · Member since 2024</div>
+            </div>
+
+            <div class="profile-stats">
+              <div class="pstat"><div class="pstat-num">18</div><div class="pstat-label">Orders</div></div>
+              <div class="pstat"><div class="pstat-num">5</div><div class="pstat-label">Requests</div></div>
+              <div class="pstat"><div class="pstat-num">4.8★</div><div class="pstat-label">Avg Rating</div></div>
+            </div>
+
+            <div class="menu-group">
+              <div class="menu-group-title">My Activity</div>
+              <div class="menu-item">
+                <div class="menu-left">
+                  <div class="menu-icon" style="background:#FDE8DC">📦</div>
+                  <div>
+                    <div class="menu-item-label">My Orders</div>
+                    <div class="menu-item-sub">18 orders placed</div>
+                  </div>
+                </div>
+                <div class="menu-arrow">›</div>
+              </div>
+              <div class="menu-item">
+                <div class="menu-left">
+                  <div class="menu-icon" style="background:#E8F5EE">📝</div>
+                  <div>
+                    <div class="menu-item-label">My Requests</div>
+                    <div class="menu-item-sub">1 active · 4 completed</div>
+                  </div>
+                </div>
+                <div class="menu-arrow">›</div>
+              </div>
+              <div class="menu-item">
+                <div class="menu-left">
+                  <div class="menu-icon" style="background:#EEF2FF">⭐</div>
+                  <div>
+                    <div class="menu-item-label">My Reviews</div>
+                    <div class="menu-item-sub">Reviews I've left</div>
+                  </div>
+                </div>
+                <div class="menu-arrow">›</div>
+              </div>
+            </div>
+
+            <div class="menu-group">
+              <div class="menu-group-title">Account</div>
+              <div class="menu-item">
+                <div class="menu-left">
+                  <div class="menu-icon" style="background:#FEF9EE">📍</div>
+                  <div>
+                    <div class="menu-item-label">Saved Addresses</div>
+                    <div class="menu-item-sub">Home, Office</div>
+                  </div>
+                </div>
+                <div class="menu-arrow">›</div>
+              </div>
+              <div class="menu-item">
+                <div class="menu-left">
+                  <div class="menu-icon" style="background:#F3E8FF">💳</div>
+                  <div>
+                    <div class="menu-item-label">Payment Methods</div>
+                    <div class="menu-item-sub">UPI · Cash</div>
+                  </div>
+                </div>
+                <div class="menu-arrow">›</div>
+              </div>
+              <div class="menu-item">
+                <div class="menu-left">
+                  <div class="menu-icon" style="background:#E8F5EE">🔔</div>
+                  <div>
+                    <div class="menu-item-label">Notifications</div>
+                    <div class="menu-item-sub">Quotes, updates, offers</div>
+                  </div>
+                </div>
+                <div class="menu-arrow">›</div>
+              </div>
+            </div>
+
+            <div class="become-chef-banner">
+              <div>
+                <div class="bcb-title">Love to cook? 🍳<br>Become a Chef</div>
+                <div class="bcb-sub">Earn from your kitchen</div>
+              </div>
+              <button class="bcb-btn">Join Now</button>
+            </div>
+
+            <div style="height:8px"></div>
+          </div>
+
+          <div class="bottom-nav">
+            <div class="nav-item"><div class="nav-icon">🏠</div><div class="nav-label">Home</div></div>
+            <div class="nav-item"><div class="nav-icon">🔍</div><div class="nav-label">Explore</div></div>
+            <div class="nav-item"><div class="nav-icon">🍽</div><div class="nav-label">Request</div></div>
+            <div class="nav-item"><div class="nav-icon">📦</div><div class="nav-label">Orders</div></div>
+            <div class="nav-item active"><div class="nav-icon">👤</div><div class="nav-label">Profile</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll-hint">↕ Scroll inside</div>
+    </div>
+  </div>
+
+</div><!-- app-wrapper -->
+
+</body>
+</html>

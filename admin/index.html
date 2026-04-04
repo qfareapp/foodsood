@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NeighbourBites Admin</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <section id="login-view" class="login-shell">
+        <div class="login-card">
+          <p class="eyebrow">NEIGHBOURBITES ADMIN</p>
+          <h1>Control buyer and chef activity from one place</h1>
+          <p class="muted">
+            Monitor onboarding, requests, quotes, orders, offers, and live dishes.
+          </p>
+          <form id="login-form" class="login-form">
+            <label class="field-label" for="admin-username">Username</label>
+            <input id="admin-username" type="text" placeholder="Enter admin username" autocomplete="username" />
+            <label class="field-label" for="admin-password">Password</label>
+            <input id="admin-password" type="password" placeholder="Enter admin password" autocomplete="current-password" />
+            <button type="submit" class="primary-btn">Open Admin Panel</button>
+          </form>
+          <p id="login-error" class="error-text"></p>
+        </div>
+      </section>
+
+      <section id="dashboard-view" class="dashboard-shell hidden">
+        <aside class="sidebar">
+          <div>
+            <p class="eyebrow">ADMIN PANEL</p>
+            <h2>NeighbourBites</h2>
+          </div>
+          <nav class="nav-list">
+            <button class="nav-link active" data-tab="overview">Overview</button>
+            <button class="nav-link" data-tab="live-orders">Live Orders</button>
+            <button class="nav-link" data-tab="users">Users</button>
+            <button class="nav-link" data-tab="requests">Requests</button>
+            <button class="nav-link" data-tab="orders">Orders</button>
+            <button class="nav-link" data-tab="offers">Direct Offers</button>
+            <button class="nav-link" data-tab="dishes">Today Board</button>
+          </nav>
+          <button id="logout-btn" class="ghost-btn">Logout</button>
+        </aside>
+
+        <main class="main">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">OPERATIONS</p>
+              <h1 id="page-title">Overview</h1>
+            </div>
+            <div class="topbar-actions">
+              <button id="refresh-btn" class="ghost-btn">Refresh</button>
+            </div>
+          </header>
+
+          <section id="global-error" class="banner error hidden"></section>
+
+          <section id="tab-overview" class="tab-panel">
+            <div id="metrics-grid" class="metrics-grid"></div>
+            <div class="grid-2">
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Recent Onboarding</h3>
+                </div>
+                <div id="recent-users" class="list-stack"></div>
+              </section>
+              <section class="panel">
+                <div class="panel-head">
+                  <h3>Recent Requests</h3>
+                </div>
+                <div id="recent-requests" class="list-stack"></div>
+              </section>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Recent Orders</h3>
+              </div>
+              <div id="recent-orders" class="table-wrap"></div>
+            </section>
+          </section>
+
+          <section id="tab-live-orders" class="tab-panel hidden">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Live Orders</h3>
+              </div>
+              <div id="live-orders-grid" class="live-orders-grid"></div>
+            </section>
+          </section>
+
+          <section id="tab-users" class="tab-panel hidden">
+            <div class="toolbar">
+              <input id="users-search" class="toolbar-input" placeholder="Search name, phone, city" />
+              <select id="users-role" class="toolbar-select">
+                <option value="">All roles</option>
+                <option value="BUYER">Buyer</option>
+                <option value="CHEF">Chef</option>
+                <option value="BOTH">Both</option>
+              </select>
+              <button id="users-load" class="ghost-btn">Apply</button>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Buyer and Chef Accounts</h3>
+              </div>
+              <div id="users-table" class="table-wrap"></div>
+            </section>
+          </section>
+
+          <section id="tab-requests" class="tab-panel hidden">
+            <div class="toolbar">
+              <input id="requests-search" class="toolbar-input" placeholder="Search dish, buyer, city" />
+              <select id="requests-status" class="toolbar-select">
+                <option value="">All statuses</option>
+                <option value="OPEN">OPEN</option>
+                <option value="NEGOTIATING">NEGOTIATING</option>
+                <option value="PAYMENT_PENDING">PAYMENT_PENDING</option>
+                <option value="COOKING">COOKING</option>
+                <option value="READY">READY</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="CANCELLED">CANCELLED</option>
+                <option value="EXPIRED">EXPIRED</option>
+              </select>
+              <button id="requests-load" class="ghost-btn">Apply</button>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Food Requests</h3>
+              </div>
+              <div id="requests-table" class="table-wrap"></div>
+            </section>
+          </section>
+
+          <section id="tab-orders" class="tab-panel hidden">
+            <div class="toolbar">
+              <input id="orders-search" class="toolbar-input" placeholder="Search dish, buyer, chef, payment ref" />
+              <select id="orders-status" class="toolbar-select">
+                <option value="">All statuses</option>
+                <option value="CONFIRMED">CONFIRMED</option>
+                <option value="COOKING">COOKING</option>
+                <option value="READY">READY</option>
+                <option value="OUT_FOR_DELIVERY">OUT_FOR_DELIVERY</option>
+                <option value="DELIVERED">DELIVERED</option>
+                <option value="CANCELLED">CANCELLED</option>
+              </select>
+              <button id="orders-load" class="ghost-btn">Apply</button>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Orders</h3>
+              </div>
+              <div id="orders-table" class="table-wrap"></div>
+            </section>
+          </section>
+
+          <section id="tab-offers" class="tab-panel hidden">
+            <div class="toolbar">
+              <input id="offers-search" class="toolbar-input" placeholder="Search dish or buyer" />
+              <select id="offers-status" class="toolbar-select">
+                <option value="">All statuses</option>
+                <option value="PENDING">PENDING</option>
+                <option value="COUNTERED">COUNTERED</option>
+                <option value="HOLD">HOLD</option>
+                <option value="PAID">PAID</option>
+                <option value="REJECTED">REJECTED</option>
+                <option value="EXPIRED">EXPIRED</option>
+              </select>
+              <button id="offers-load" class="ghost-btn">Apply</button>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Direct Buyer Offers</h3>
+              </div>
+              <div id="offers-table" class="table-wrap"></div>
+            </section>
+          </section>
+
+          <section id="tab-dishes" class="tab-panel hidden">
+            <div class="toolbar">
+              <input id="dishes-search" class="toolbar-input" placeholder="Search dish, cuisine, chef" />
+              <button id="dishes-load" class="ghost-btn">Apply</button>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Chef Today Board Listings</h3>
+              </div>
+              <div id="dishes-table" class="table-wrap"></div>
+            </section>
+          </section>
+        </main>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

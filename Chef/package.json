@@ -1,5 +1,5 @@
 {
-  "name": "foodsood",
+  "name": "foodsood-chef",
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
@@ -9,12 +9,15 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "@react-native-community/slider": "4.5.5",
+    "@react-native-community/slider": "5.0.1",
     "expo": "~54.0.33",
+    "expo-dev-client": "~6.0.20",
+    "expo-dev-client": "~6.0.15",
     "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.10",
-    "expo-location": "~18.1.5",
-    "expo-secure-store": "^55.0.10-canary-20260327-0789fbc",
+    "expo-location": "~19.0.8",
+    "expo-notifications": "^0.32.16",
+    "expo-secure-store": "~14.0.1",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-native": "0.81.5",
