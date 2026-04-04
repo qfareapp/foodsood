@@ -1,5 +1,10 @@
 const ADMIN_TOKEN_STORAGE_KEY = 'neighbourbites_admin_token';
-const API_BASE = `${window.location.origin}/api/admin`;
+const LOCAL_ADMIN_API_BASE = 'http://localhost:3000/api/admin';
+const LIVE_ADMIN_API_BASE = 'https://foodsood.onrender.com/api/admin';
+const hostname = window.location.hostname;
+const API_BASE = hostname === 'localhost' || hostname === '127.0.0.1'
+  ? LOCAL_ADMIN_API_BASE
+  : LIVE_ADMIN_API_BASE;
 
 const state = {
   adminToken: localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || '',
