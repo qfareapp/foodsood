@@ -10,6 +10,10 @@ const MAX_CHEF_QUOTES = 2;
 const MAX_BUYER_QUOTES = 2;
 const MAX_BUYER_COUNTERS = MAX_BUYER_QUOTES - 1;
 
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function holdExpiry() {
   return new Date(Date.now() + HOLD_MINUTES * 60 * 1000);
 }
@@ -42,8 +46,10 @@ async function verifyBuyerTokenForQuote(quoteId: string, buyerToken: string) {
 
 // ── GET /api/quotes/:id ─────────────────────────────────────────────────────
 router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     include: {
       chef: { select: { id: true, name: true, avatar: true, rating: true, ratingCount: true, totalOrders: true, cookingStyle: true } },
       request: { select: { id: true, dishName: true, userId: true, status: true } },
@@ -63,8 +69,10 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
 
 // ── PUT /api/quotes/:id  (chef updates their own quote) ──────────────────────
 router.put('/:id', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     select: { chefId: true, status: true, chefQuoteCount: true },
   });
   if (!quote) {
@@ -99,7 +107,7 @@ router.put('/:id', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const updated = await prisma.quote.update({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     data: {
       ...parsed.data,
       status: 'PENDING',
@@ -112,8 +120,10 @@ router.put('/:id', requireAuth, async (req: AuthRequest, res) => {
 
 // ── POST /api/quotes/:id/counter  (buyer sends counter offer) ────────────────
 router.post('/:id/counter', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     include: { request: { select: { userId: true, status: true } } },
   });
   if (!quote) {
@@ -141,13 +151,15 @@ router.post('/:id/counter', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const updated = await prisma.quote.update({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     data: { status: 'COUNTERED', counterOffer: parsed.data.offer, buyerCounterCount: { increment: 1 } },
   });
   res.json(updated);
 });
 
 router.post('/:id/public-counter', async (req, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const schema = z.object({
     buyerToken: z.string().min(8),
     offer: z.number().int().min(1).max(100000),
@@ -158,7 +170,7 @@ router.post('/:id/public-counter', async (req, res) => {
     return;
   }
 
-  const checked = await verifyBuyerTokenForQuote(req.params.id, parsed.data.buyerToken);
+  const checked = await verifyBuyerTokenForQuote(quoteId, parsed.data.buyerToken);
   if ('error' in checked) {
     res.status(checked.error === 'Quote not found' ? 404 : 403).json({ error: checked.error });
     return;
@@ -174,7 +186,7 @@ router.post('/:id/public-counter', async (req, res) => {
   }
 
   const updated = await prisma.quote.update({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     data: { status: 'COUNTERED', counterOffer: parsed.data.offer, buyerCounterCount: { increment: 1 } },
   });
   res.json(updated);
@@ -182,8 +194,10 @@ router.post('/:id/public-counter', async (req, res) => {
 
 // ── POST /api/quotes/:id/accept  (buyer accepts → creates Order) ─────────────
 router.post('/:id/accept', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     include: {
       request: { select: { id: true, userId: true, status: true, delivery: true } },
     },
@@ -242,6 +256,8 @@ router.post('/:id/accept', requireAuth, async (req: AuthRequest, res) => {
 });
 
 router.post('/:id/public-accept', async (req, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const schema = z.object({
     buyerToken: z.string().min(8),
     address: z.string().optional(),
@@ -252,7 +268,7 @@ router.post('/:id/public-accept', async (req, res) => {
     return;
   }
 
-  const checked = await verifyBuyerTokenForQuote(req.params.id, parsed.data.buyerToken);
+  const checked = await verifyBuyerTokenForQuote(quoteId, parsed.data.buyerToken);
   if ('error' in checked) {
     res.status(checked.error === 'Quote not found' ? 404 : 403).json({ error: checked.error });
     return;
@@ -298,8 +314,10 @@ router.post('/:id/public-accept', async (req, res) => {
 
 // ── POST /api/quotes/:id/reject  (buyer rejects a single quote) ──────────────
 router.post('/:id/reject', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     include: { request: { select: { userId: true } } },
   });
   if (!quote) {
@@ -316,13 +334,15 @@ router.post('/:id/reject', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const updated = await prisma.quote.update({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     data: { status: 'REJECTED' },
   });
   res.json(updated);
 });
 
 router.post('/:id/public-reject', async (req, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const schema = z.object({ buyerToken: z.string().min(8) });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -330,7 +350,7 @@ router.post('/:id/public-reject', async (req, res) => {
     return;
   }
 
-  const checked = await verifyBuyerTokenForQuote(req.params.id, parsed.data.buyerToken);
+  const checked = await verifyBuyerTokenForQuote(quoteId, parsed.data.buyerToken);
   if ('error' in checked) {
     res.status(checked.error === 'Quote not found' ? 404 : 403).json({ error: checked.error });
     return;
@@ -342,15 +362,17 @@ router.post('/:id/public-reject', async (req, res) => {
   }
 
   const updated = await prisma.quote.update({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     data: { status: 'REJECTED' },
   });
   res.json(updated);
 });
 
 router.post('/:id/chef-accept-counter', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     include: {
       request: { select: { id: true, userId: true, status: true, delivery: true } },
     },
@@ -397,8 +419,10 @@ router.post('/:id/chef-accept-counter', requireAuth, async (req: AuthRequest, re
 });
 
 router.post('/:id/chef-reject-counter', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     select: { chefId: true, status: true, counterOffer: true },
   });
   if (!quote) {
@@ -415,7 +439,7 @@ router.post('/:id/chef-reject-counter', requireAuth, async (req: AuthRequest, re
   }
 
   const updated = await prisma.quote.update({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     data: { status: 'REJECTED' },
   });
   res.json(updated);
@@ -423,8 +447,10 @@ router.post('/:id/chef-reject-counter', requireAuth, async (req: AuthRequest, re
 
 // ── DELETE /api/quotes/:id  (chef withdraws their quote) ─────────────────────
 router.delete('/:id', requireAuth, async (req: AuthRequest, res) => {
+  const quoteId = firstParam(req.params.id);
+  if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
-    where: { id: req.params.id },
+    where: { id: quoteId },
     select: { chefId: true, status: true },
   });
   if (!quote) {
@@ -440,7 +466,7 @@ router.delete('/:id', requireAuth, async (req: AuthRequest, res) => {
     return;
   }
 
-  await prisma.quote.update({ where: { id: req.params.id }, data: { status: 'WITHDRAWN' } });
+  await prisma.quote.update({ where: { id: quoteId }, data: { status: 'WITHDRAWN' } });
   res.json({ success: true });
 });
 

@@ -11,6 +11,10 @@ const ORDER_STATUSES = [
 ] as const;
 const PAYMENT_STATUSES = ['HOLD', 'PAID', 'EXPIRED'] as const;
 
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 // Chef-allowed status transitions
 const CHEF_TRANSITIONS: Record<string, string[]> = {
   CONFIRMED: ['COOKING'],
@@ -107,8 +111,10 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
 // ── GET /api/orders/:id ─────────────────────────────────────────────────────
 router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
   await expireHeldOrders();
+  const orderId = firstParam(req.params.id);
+  if (!orderId) return res.status(400).json({ error: 'Order id required' });
   const order = await prisma.order.findUnique({
-    where: { id: req.params.id },
+    where: { id: orderId },
     include: ORDER_INCLUDE,
   });
   if (!order) {
@@ -131,8 +137,10 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
 // ── PUT /api/orders/:id/status  (chef updates order status) ──────────────────
 router.put('/:id/status', requireAuth, async (req: AuthRequest, res) => {
   await expireHeldOrders();
+  const orderId = firstParam(req.params.id);
+  if (!orderId) return res.status(400).json({ error: 'Order id required' });
   const order = await prisma.order.findUnique({
-    where: { id: req.params.id },
+    where: { id: orderId },
     select: { chefId: true, buyerId: true, status: true, requestId: true, paymentStatus: true, quote: { select: { cookTime: true } } },
   });
   if (!order) {
@@ -193,7 +201,7 @@ router.put('/:id/status', requireAuth, async (req: AuthRequest, res) => {
   }
 
   await prisma.order.update({
-    where: { id: req.params.id },
+    where: { id: orderId },
     data: updateData,
   });
 
@@ -212,7 +220,7 @@ router.put('/:id/status', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const updated = await prisma.order.findUnique({
-    where: { id: req.params.id },
+    where: { id: orderId },
     include: ORDER_INCLUDE,
   });
   if (!updated) {
@@ -231,6 +239,8 @@ router.put('/:id/status', requireAuth, async (req: AuthRequest, res) => {
 
 router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
   await expireHeldOrders();
+  const orderId = firstParam(req.params.id);
+  if (!orderId) return res.status(400).json({ error: 'Order id required' });
   const schema = z.object({
     paymentMethod: z.string().max(40).optional(),
   });
@@ -241,7 +251,7 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const order = await prisma.order.findUnique({
-    where: { id: req.params.id },
+    where: { id: orderId },
     select: { id: true, buyerId: true, paymentStatus: true, holdUntil: true, requestId: true, chefId: true },
   });
   if (!order) {
@@ -306,8 +316,10 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
 
 // ── POST /api/orders/:id/review  (buyer reviews the chef after delivery) ─────
 router.post('/:id/review', requireAuth, async (req: AuthRequest, res) => {
+  const orderId = firstParam(req.params.id);
+  if (!orderId) return res.status(400).json({ error: 'Order id required' });
   const order = await prisma.order.findUnique({
-    where: { id: req.params.id },
+    where: { id: orderId },
     include: { review: true },
   });
   if (!order) {

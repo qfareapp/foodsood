@@ -37,6 +37,10 @@ const createSchema = z.object({
 
 const BUYER_SHADOW_PASSWORD = 'buyer-shadow-account';
 
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function buyerPhoneFromToken(token: string): string {
   return `b${createHash('sha256').update(token).digest('hex').slice(0, 14)}`;
 }
@@ -206,8 +210,10 @@ router.get('/me', requireAuth, async (req: AuthRequest, res) => {
 
 // ── GET /api/requests/:id ───────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
+  const requestId = firstParam(req.params.id);
+  if (!requestId) return res.status(400).json({ error: 'Request id required' });
   const request = await prisma.request.findUnique({
-    where: { id: req.params.id },
+    where: { id: requestId },
     include: {
       user: { select: { id: true, name: true, avatar: true, city: true, rating: true } },
       quotes: {
@@ -316,8 +322,10 @@ router.post('/', optionalAuth, async (req: AuthRequest, res) => {
 
 // ── PUT /api/requests/:id ───────────────────────────────────────────────────
 router.put('/:id', requireAuth, async (req: AuthRequest, res) => {
+  const requestId = firstParam(req.params.id);
+  if (!requestId) return res.status(400).json({ error: 'Request id required' });
   const request = await prisma.request.findUnique({
-    where: { id: req.params.id },
+    where: { id: requestId },
     select: { userId: true, status: true },
   });
   if (!request) {
@@ -336,7 +344,7 @@ router.put('/:id', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const updated = await prisma.request.update({
-    where: { id: req.params.id },
+    where: { id: requestId },
     data: parsed.data,
   });
 
@@ -348,8 +356,10 @@ router.put('/:id', requireAuth, async (req: AuthRequest, res) => {
 
 // ── DELETE /api/requests/:id  (cancel) ──────────────────────────────────────
 router.delete('/:id', requireAuth, async (req: AuthRequest, res) => {
+  const requestId = firstParam(req.params.id);
+  if (!requestId) return res.status(400).json({ error: 'Request id required' });
   const request = await prisma.request.findUnique({
-    where: { id: req.params.id },
+    where: { id: requestId },
     select: { userId: true, status: true },
   });
   if (!request) {
@@ -366,7 +376,7 @@ router.delete('/:id', requireAuth, async (req: AuthRequest, res) => {
   }
 
   await prisma.request.update({
-    where: { id: req.params.id },
+    where: { id: requestId },
     data: { status: 'CANCELLED' },
   });
 
@@ -375,6 +385,8 @@ router.delete('/:id', requireAuth, async (req: AuthRequest, res) => {
 
 // ── POST /api/requests/:id/quotes  (chef submits a quote) ───────────────────
 router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
+  const requestId = firstParam(req.params.id);
+  if (!requestId) return res.status(400).json({ error: 'Request id required' });
   // Any chef (role CHEF or BOTH) can submit
   const { role, userId } = req.user!;
   if (role !== 'CHEF' && role !== 'BOTH') {
@@ -383,7 +395,7 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const request = await prisma.request.findUnique({
-    where: { id: req.params.id },
+    where: { id: requestId },
     select: { id: true, status: true, userId: true, targetChefId: true },
   });
   if (!request) {
@@ -404,7 +416,7 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const existing = await prisma.quote.findFirst({
-    where: { requestId: req.params.id, chefId: userId, status: { not: 'WITHDRAWN' } },
+    where: { requestId, chefId: userId, status: { not: 'WITHDRAWN' } },
     select: { id: true },
   });
   if (existing) {
@@ -427,7 +439,7 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const quote = await prisma.quote.create({
-    data: { ...parsed.data, requestId: req.params.id, chefId: userId },
+    data: { ...parsed.data, requestId, chefId: userId },
     include: {
       chef: { select: { id: true, name: true, avatar: true, rating: true, ratingCount: true, totalOrders: true } },
     },
@@ -435,7 +447,7 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
 
   // Mark request as NEGOTIATING if still OPEN
   if (request.status === 'OPEN') {
-    await prisma.request.update({ where: { id: req.params.id }, data: { status: 'NEGOTIATING' } });
+    await prisma.request.update({ where: { id: requestId }, data: { status: 'NEGOTIATING' } });
   }
 
   res.status(201).json(quote);
@@ -443,8 +455,10 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
 
 // ── GET /api/requests/:id/quotes  (request owner sees all quotes) ────────────
 router.get('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
+  const requestId = firstParam(req.params.id);
+  if (!requestId) return res.status(400).json({ error: 'Request id required' });
   const request = await prisma.request.findUnique({
-    where: { id: req.params.id },
+    where: { id: requestId },
     select: { userId: true },
   });
   if (!request) {
@@ -461,8 +475,8 @@ router.get('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const where = isOwner
-    ? { requestId: req.params.id }
-    : { requestId: req.params.id, chefId: req.user!.userId };
+    ? { requestId }
+    : { requestId, chefId: req.user!.userId };
 
   const quotes = await prisma.quote.findMany({
     where,

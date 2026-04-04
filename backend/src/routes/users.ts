@@ -75,6 +75,10 @@ const dishSuggestionsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional(),
 });
 
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 // ── GET /api/users/me ───────────────────────────────────────────────────────
 router.get('/me', requireAuth, async (req: AuthRequest, res) => {
   const user = await prisma.user.findUnique({
@@ -255,12 +259,14 @@ router.post('/me/addresses', requireAuth, async (req: AuthRequest, res) => {
 
 // ── DELETE /api/users/me/addresses/:id ──────────────────────────────────────
 router.delete('/me/addresses/:id', requireAuth, async (req: AuthRequest, res) => {
-  const address = await prisma.address.findUnique({ where: { id: req.params.id } });
+  const addressId = firstParam(req.params.id);
+  if (!addressId) return res.status(400).json({ error: 'Address id required' });
+  const address = await prisma.address.findUnique({ where: { id: addressId } });
   if (!address || address.userId !== req.user!.userId) {
     res.status(404).json({ error: 'Address not found' });
     return;
   }
-  await prisma.address.delete({ where: { id: req.params.id } });
+  await prisma.address.delete({ where: { id: addressId } });
   res.json({ success: true });
 });
 
@@ -276,7 +282,8 @@ router.get('/me/saved-chefs', requireAuth, async (req: AuthRequest, res) => {
 
 // ── POST /api/users/me/saved-chefs/:chefId ──────────────────────────────────
 router.post('/me/saved-chefs/:chefId', requireAuth, async (req: AuthRequest, res) => {
-  const { chefId } = req.params;
+  const chefId = firstParam(req.params.chefId);
+  if (!chefId) return res.status(400).json({ error: 'Chef id required' });
   if (chefId === req.user!.userId) {
     res.status(400).json({ error: 'Cannot save yourself' });
     return;
@@ -296,8 +303,10 @@ router.post('/me/saved-chefs/:chefId', requireAuth, async (req: AuthRequest, res
 
 // ── DELETE /api/users/me/saved-chefs/:chefId ────────────────────────────────
 router.delete('/me/saved-chefs/:chefId', requireAuth, async (req: AuthRequest, res) => {
+  const chefId = firstParam(req.params.chefId);
+  if (!chefId) return res.status(400).json({ error: 'Chef id required' });
   await prisma.savedChef.deleteMany({
-    where: { savedById: req.user!.userId, chefId: req.params.chefId },
+    where: { savedById: req.user!.userId, chefId },
   });
   res.json({ success: true });
 });
