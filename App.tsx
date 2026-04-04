@@ -42,7 +42,9 @@ const C = {
   paleYellow: '#FEF9EE',
 } as const;
 
-const API_BASE = 'http://192.168.15.135:3000/api';
+const LOCAL_API_BASE = 'http://192.168.15.135:3000/api';
+const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
+const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 const BUYER_ACCESS_KEY = 'buyer_access_token';
 const BUYER_REFRESH_KEY = 'buyer_refresh_token';
 const MAX_LOCATION_IMAGE_BYTES = 30 * 1024;

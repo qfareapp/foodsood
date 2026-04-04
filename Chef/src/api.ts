@@ -6,7 +6,9 @@ import * as SecureStore from 'expo-secure-store';
  * iOS simulator     → http://localhost:3000/api
  * Physical device   → http://<your-lan-ip>:3000/api
  */
-export const API_BASE = 'http://192.168.15.135:3000/api';
+const LOCAL_API_BASE = 'http://192.168.15.135:3000/api';
+const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
+export const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 
 // ── Token helpers ─────────────────────────────────────────────────────────
 export const Tokens = {
