@@ -164,7 +164,8 @@ router.get('/', optionalAuth, async (req: AuthRequest, res) => {
     results = results
       .filter((r) => {
         if (r.lat === null || r.lng === null) return true; // no coords → include
-        return haversineKm(userLat, userLng, r.lat, r.lng) <= radius;
+        const buyerRadius = r.notifyRadiusKm ?? 5;
+        return haversineKm(userLat, userLng, r.lat, r.lng) <= buyerRadius;
       })
       .map((r) => ({
         ...r,
@@ -246,7 +247,7 @@ router.post('/', optionalAuth, async (req: AuthRequest, res) => {
     return;
   }
 
-  const { preferences, expiresAt, notifyRadiusKm, buyerToken, buyerName, ...rest } = parsed.data;
+  const { preferences, expiresAt, buyerToken, buyerName, ...rest } = parsed.data;
   const userId = await resolveBuyerUserId({
     userId: req.user?.userId,
     buyerToken,
@@ -290,7 +291,7 @@ router.post('/', optionalAuth, async (req: AuthRequest, res) => {
   });
 
   // ── Notify nearby chefs (fire-and-forget) ────────────────────────────────
-  const chefRadius = notifyRadiusKm; // km — buyer-defined geofence radius
+  const chefRadius = rest.notifyRadiusKm ?? 2; // km — buyer-defined geofence radius
   const nearbyChefs = await prisma.user.findMany({
     where: {
       role: { in: ['CHEF', 'BOTH'] },

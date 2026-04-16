@@ -62,13 +62,14 @@ model Request {
   preferences String    @default("[]")
   delivery    String
   budget      Int
-  targetChefId String?
-  notes       String?
-  status      String    @default("OPEN")
-  lat         Float?
-  lng         Float?
-  city        String?
-  expiresAt   DateTime?
+  targetChefId   String?
+  notes          String?
+  notifyRadiusKm Float     @default(2)
+  status         String    @default("OPEN")
+  lat            Float?
+  lng            Float?
+  city           String?
+  expiresAt      DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 

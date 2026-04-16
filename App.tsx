@@ -989,6 +989,8 @@ export default function App() {
   const [myRequests, setMyRequests] = useState<BuyerRequestApi[]>([]);
   const [myOffers, setMyOffers] = useState<DishOfferItem[]>([]);
   const [myRequestOrders, setMyRequestOrders] = useState<BuyerRequestOrderItem[]>([]);
+  const [seenNotificationKeys, setSeenNotificationKeys] = useState<string[]>([]);
+  const [seenNotificationsReady, setSeenNotificationsReady] = useState(false);
   const [negSheetDismissed, setNegSheetDismissed] = useState(false);
   const [postingRequest, setPostingRequest] = useState(false);
   const [location, setLocation] = useState('Set your location');
@@ -1834,8 +1836,6 @@ export default function App() {
   const [reviewRating, setReviewRating] = useState(0);
   const [reviewComment, setReviewComment] = useState('');
   const [selectedNotification, setSelectedNotification] = useState<BuyerNotificationCard | null>(null);
-  const [seenNotificationKeys, setSeenNotificationKeys] = useState<string[]>([]);
-  const [seenNotificationsReady, setSeenNotificationsReady] = useState(false);
   const [savedChefs, setSavedChefs] = useState<SavedChef[]>([]);
   const [savedChefsReady, setSavedChefsReady] = useState(false);
 

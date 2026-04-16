@@ -127,10 +127,9 @@ export const Auth = {
 
 // ── Requests (buyer requests available to quote on) ───────────────────────
 export const Requests = {
-  nearby: (params?: { lat?: number; lng?: number; radiusKm?: number }) => {
-    const qs = new URLSearchParams({ status: 'OPEN,NEGOTIATING', limit: '30' });
+  nearby: (params?: { lat?: number; lng?: number }) => {
+    const qs = new URLSearchParams({ status: 'OPEN,NEGOTIATING', limit: '50' });
     if (params?.lat) { qs.set('lat', String(params.lat)); qs.set('lng', String(params.lng ?? 0)); }
-    if (params?.radiusKm) qs.set('radiusKm', String(params.radiusKm));
     return api<RequestItem[]>(`/requests?${qs}`);
   },
 
@@ -298,6 +297,7 @@ export interface RequestItem {
   lng?: number;
   createdAt: string;
   distanceKm?: number;
+  notifyRadiusKm?: number;
   quotesCount: number;
   user: {
     id: string;

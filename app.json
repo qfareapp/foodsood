@@ -4,7 +4,7 @@
     "slug": "foodsood",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/buyer-icon.png",
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -15,16 +15,22 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.mepranjal.foodsood",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#E85D26",
+        "foregroundImage": "./assets/buyer-adaptive-foreground.png",
+        "backgroundImage": "./assets/buyer-adaptive-background.png",
+        "monochromeImage": "./assets/buyer-adaptive-monochrome.png"
       },
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3ae1c72f-6d18-4ef4-a52a-c8f77f5e193b"
+      }
     }
   }
 }

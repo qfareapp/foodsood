@@ -7,6 +7,7 @@ module.exports = {
     version: '1.0.0',
     orientation: 'portrait',
     userInterfaceStyle: 'light',
+    icon: './assets/chef-icon.png',
     splash: {
       resizeMode: 'contain',
       backgroundColor: '#2D9B6F',
@@ -17,6 +18,9 @@ module.exports = {
     android: {
       googleServicesFile,
       adaptiveIcon: {
+        foregroundImage: './assets/chef-adaptive-foreground.png',
+        backgroundImage: './assets/chef-adaptive-background.png',
+        monochromeImage: './assets/chef-adaptive-monochrome.png',
         backgroundColor: '#2D9B6F',
       },
       predictiveBackGestureEnabled: false,

@@ -371,6 +371,7 @@ export default function App() {
 
   // data
   const [requests, setRequests]   = useState<RequestItem[]>([]);
+  const [ignoredRequestIds, setIgnoredRequestIds] = useState<string[]>([]);
   const [orders, setOrdersState]  = useState<OrderItem[]>([]);
   const [todayMenu, setTodayMenu] = useState<TodayDish[]>([]);
   const [dishOffers, setDishOffers] = useState<DishOffer[]>([]);
@@ -451,7 +452,6 @@ export default function App() {
           setScreen('home');
           await loadHomeData(
             typeof me.lat === 'number' && typeof me.lng === 'number' ? { lat: me.lat, lng: me.lng } : null,
-            geoRadius,
           );
           await loadTodayMenu();
         } catch {
@@ -505,21 +505,15 @@ export default function App() {
     `);
   }, [geoRadius, showLocationMapModal]);
 
-  async function loadRequestBoardData(coordsOverride?: { lat: number; lng: number } | null, radiusOverride?: number) {
+  async function loadRequestBoardData(coordsOverride?: { lat: number; lng: number } | null) {
     const coords = coordsOverride === undefined ? userCoords : coordsOverride;
-    const radiusKm = radiusOverride ?? geoRadius;
-    const [nearby, unrestricted] = await Promise.all([
-      Requests.nearby(coords ? { ...coords, radiusKm } : { radiusKm }),
-      Requests.nearby({ radiusKm }),
-    ]);
-    const merged = [...nearby, ...unrestricted].filter((item, index, arr) => arr.findIndex((entry) => entry.id === item.id) === index);
-    return merged;
+    return Requests.nearby(coords ? { ...coords } : {});
   }
 
-  async function refreshRequestBoard(coordsOverride?: { lat: number; lng: number } | null, radiusOverride?: number) {
+  async function refreshRequestBoard(coordsOverride?: { lat: number; lng: number } | null) {
     const seq = ++homeLoadSeqRef.current;
     try {
-      const nextRequests = await loadRequestBoardData(coordsOverride, radiusOverride);
+      const nextRequests = await loadRequestBoardData(coordsOverride);
       if (seq !== homeLoadSeqRef.current) return;
       setRequests(nextRequests);
     } catch {
@@ -556,11 +550,11 @@ export default function App() {
     return () => sub.remove();
   }, [screen, user, geoRadius, userCoords]);
 
-  async function loadHomeData(coordsOverride?: { lat: number; lng: number } | null, radiusOverride?: number) {
+  async function loadHomeData(coordsOverride?: { lat: number; lng: number } | null) {
     try {
       const seq = ++homeLoadSeqRef.current;
       const [reqs, ords, offrs] = await Promise.allSettled([
-        loadRequestBoardData(coordsOverride, radiusOverride),
+        loadRequestBoardData(coordsOverride),
         Orders.list(),
         Offers.list(['PENDING', 'COUNTERED', 'HOLD', 'PAID']),
       ]);
@@ -666,7 +660,6 @@ export default function App() {
     setLoading(true);
     await loadHomeData(
       typeof me.lat === 'number' && typeof me.lng === 'number' ? { lat: me.lat, lng: me.lng } : null,
-      geoRadius,
     );
     await loadTodayMenu();
     setLoading(false);
@@ -799,7 +792,7 @@ export default function App() {
         });
         setUser(updated);
       }
-      await loadHomeData(userCoords, geoRadius);
+      await loadHomeData(userCoords);
       setShowLocationModal(false);
     } catch {
       Alert.alert('Save failed', 'Could not save location details. Try again.');
@@ -846,7 +839,7 @@ export default function App() {
         setUser(updated);
       } catch { /* ignore */ }
     }
-    await loadHomeData(null, geoRadius);
+    await loadHomeData(null);
   }, [geoRadius, user]);
 
   // ── Active & past orders ─────────────────────────────────────────────
@@ -876,6 +869,9 @@ export default function App() {
           onOpenLocationSettings={() => { setLocationSearch(''); setShowLocationModal(true); }}
           onToggleAvailability={toggleAvailability}
           requests={requests}
+          ignoredRequestIds={ignoredRequestIds}
+          onIgnoreRequest={(id) => setIgnoredRequestIds((prev) => [...prev, id])}
+          chefGeoRadius={geoRadius}
           activeOrders={activeOrders}
           dishOffers={dishOffers}
           acceptedDishOffers={acceptedDishOffers}
@@ -1411,7 +1407,8 @@ function HomeScreen({
   user, isAvailable, onToggleAvailability,
   locationLabel, geoRadius, hasGpsLocation, onOpenLocationSettings,
   todayMenu, onOpenSkills,
-  requests, activeOrders, dishOffers, acceptedDishOffers, earningsTotal, loading, refreshing,
+  requests, ignoredRequestIds, onIgnoreRequest, chefGeoRadius,
+  activeOrders, dishOffers, acceptedDishOffers, earningsTotal, loading, refreshing,
   onRefresh, onRequestPress, onOrderPress,
   onViewAllOrders, onViewEarnings, onViewProfile,
   onOfferAccept, onOfferReject, onOfferCounter,
@@ -1426,6 +1423,9 @@ function HomeScreen({
   onOpenSkills: () => void;
   onToggleAvailability: (v: boolean) => void;
   requests: RequestItem[];
+  ignoredRequestIds: string[];
+  onIgnoreRequest: (id: string) => void;
+  chefGeoRadius: number;
   activeOrders: OrderItem[];
   dishOffers: DishOffer[];
   acceptedDishOffers: PaidDishOffer[];
@@ -1443,6 +1443,7 @@ function HomeScreen({
   onOfferCounter: (id: string, counterPrice: number, counterNote?: string) => Promise<void>;
 }) {
   const liveDishOffers = dishOffers.filter((offer) => offer.status !== 'PAID');
+  const visibleRequests = requests.filter((r) => !ignoredRequestIds.includes(r.id));
   const activeAcceptedDishOffers = acceptedDishOffers.filter((offer) => getPaidOfferOrderStatus(offer) !== 'DELIVERED');
   const activeWorkCount = activeOrders.length + activeAcceptedDishOffers.length;
 
@@ -1514,7 +1515,7 @@ function HomeScreen({
       {/* Stat cards */}
       <View style={homeSt.statsRow}>
         <HomeStatCard label="ACTIVE ORDERS" value={String(activeWorkCount)} delay={100} onPress={onViewAllOrders} />
-        <HomeStatCard label="NOTICES" value={String(requests.length + liveDishOffers.length)} delay={200} />
+        <HomeStatCard label="NOTICES" value={String(visibleRequests.length + liveDishOffers.length)} delay={200} />
         <HomeStatCard
           label="EARNINGS"
           value={`\u20B9${earningsTotal >= 1000 ? `${(earningsTotal / 1000).toFixed(1)}k` : earningsTotal}`}
@@ -1550,7 +1551,7 @@ function HomeScreen({
           | { kind: 'offer';   data: DishOffer;   ts: number };
 
         const items: BoardItem[] = [
-          ...requests.map((r): BoardItem => ({ kind: 'request', data: r, ts: new Date(r.createdAt).getTime() })),
+          ...visibleRequests.map((r): BoardItem => ({ kind: 'request', data: r, ts: new Date(r.createdAt).getTime() })),
           ...liveDishOffers.map((o): BoardItem => ({ kind: 'offer', data: o, ts: new Date(o.createdAt).getTime() })),
         ].sort((a, b) => b.ts - a.ts);
 
@@ -1569,7 +1570,7 @@ function HomeScreen({
                 <Text style={homeSt.geoIcon}>🎯</Text>
                 <Text style={homeSt.geoText}>
                   {hasGpsLocation
-                    ? `Showing buyer activity within ${geoRadius} km`
+                    ? 'Showing buyer requests in your area'
                     : 'Set GPS location to filter nearby activity'}
                 </Text>
                 <TouchableOpacity onPress={onOpenLocationSettings}>
@@ -1581,19 +1582,22 @@ function HomeScreen({
               ) : total === 0 ? (
                 <View style={homeSt.emptyState}>
                   <Text style={homeSt.emptyEmoji}>📌</Text>
-                  <Text style={homeSt.emptyTitle}>{hasGpsLocation ? `No activity within ${geoRadius} km` : 'No buyer activity yet'}</Text>
+                  <Text style={homeSt.emptyTitle}>{hasGpsLocation ? 'No nearby requests' : 'No buyer activity yet'}</Text>
                   <Text style={homeSt.emptySub}>
-                    {hasGpsLocation ? 'Try increasing your geo-fencing range.' : 'Set your GPS location to filter nearby buyer activity.'}
+                    {hasGpsLocation ? 'Buyers haven\'t posted requests near you yet.' : 'Set your GPS location to filter nearby buyer activity.'}
                   </Text>
-                  <TouchableOpacity style={homeSt.expandBtn} onPress={onOpenLocationSettings}>
-                    <Text style={homeSt.expandBtnText}>Expand Range</Text>
-                  </TouchableOpacity>
                 </View>
               ) : (
                 <View style={{ padding: 12 }}>
                   {items.map((item) =>
                     item.kind === 'request' ? (
-                      <RequestCard key={`req-${item.data.id}`} req={item.data} onPress={() => onRequestPress(item.data.id)} />
+                      <RequestCard
+                        key={`req-${item.data.id}`}
+                        req={item.data}
+                        chefGeoRadius={chefGeoRadius}
+                        onPress={() => onRequestPress(item.data.id)}
+                        onIgnore={() => onIgnoreRequest(item.data.id)}
+                      />
                     ) : (
                       <DishOfferCard
                         key={`offer-${item.data.id}`}
@@ -3688,9 +3692,18 @@ function DishOfferCard({
   );
 }
 
-function RequestCard({ req, onPress }: { req: RequestItem; onPress: () => void }) {
+function RequestCard({ req, onPress, chefGeoRadius, onIgnore }: {
+  req: RequestItem;
+  onPress: () => void;
+  chefGeoRadius?: number;
+  onIgnore?: () => void;
+}) {
   const isThaliRequest = req.category.toLowerCase() === 'thali';
   const latestNegotiatedPrice = getLatestNegotiatedRequestPrice(req);
+  const isOutOfRange =
+    chefGeoRadius != null &&
+    req.distanceKm != null &&
+    req.distanceKm > chefGeoRadius;
   return (
     <TouchableOpacity style={cardSt.reqCard} onPress={onPress} activeOpacity={0.85}>
       <View style={cardSt.reqTop}>
@@ -3731,9 +3744,27 @@ function RequestCard({ req, onPress }: { req: RequestItem; onPress: () => void }
           <Text style={cardSt.reqTime}>{timeAgo(req.createdAt)}</Text>
         </View>
       </View>
-      <TouchableOpacity style={cardSt.quoteBtn} onPress={onPress} activeOpacity={0.85}>
-        <Text style={cardSt.quoteBtnText}>Submit Quote →</Text>
-      </TouchableOpacity>
+      {isOutOfRange ? (
+        <>
+          <View style={cardSt.outOfRangeBanner}>
+            <Text style={cardSt.outOfRangeText}>
+              📍 {req.distanceKm} km away · your preferred {chefGeoRadius} km
+            </Text>
+          </View>
+          <View style={cardSt.outOfRangeActions}>
+            <TouchableOpacity style={cardSt.acceptAnywayBtn} onPress={onPress} activeOpacity={0.85}>
+              <Text style={cardSt.acceptAnywayText}>✅ Accept anyway</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={cardSt.ignoreBtn} onPress={onIgnore} activeOpacity={0.85}>
+              <Text style={cardSt.ignoreBtnText}>❌ Ignore</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      ) : (
+        <TouchableOpacity style={cardSt.quoteBtn} onPress={onPress} activeOpacity={0.85}>
+          <Text style={cardSt.quoteBtnText}>Submit Quote →</Text>
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 }
@@ -4727,6 +4758,13 @@ const cardSt = StyleSheet.create({
   quotedBadgeText: { fontSize: 10, fontWeight: '700', color: '#B07800' },
   quoteBtn:     { backgroundColor: C.mint, borderRadius: 10, paddingVertical: 10, alignItems: 'center', shadowColor: C.mint, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 2 },
   quoteBtnText: { color: C.white, fontSize: 13, fontWeight: '700' },
+  outOfRangeBanner: { backgroundColor: '#FFF8E7', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 8, borderWidth: 1, borderColor: '#F0D080' },
+  outOfRangeText: { fontSize: 12, color: '#A07000', fontWeight: '600' },
+  outOfRangeActions: { flexDirection: 'row', gap: 8 },
+  acceptAnywayBtn: { flex: 1, backgroundColor: C.mint, borderRadius: 10, paddingVertical: 9, alignItems: 'center' },
+  acceptAnywayText: { color: C.white, fontSize: 13, fontWeight: '700' },
+  ignoreBtn: { flex: 1, backgroundColor: '#FFF0F0', borderRadius: 10, paddingVertical: 9, alignItems: 'center', borderWidth: 1, borderColor: '#F0C0C0' },
+  ignoreBtnText: { color: '#C03030', fontSize: 13, fontWeight: '700' },
   orderCard:    { backgroundColor: C.white, borderRadius: 14, borderWidth: 1, borderColor: C.border, padding: 12, marginBottom: 10 },
   orderTop:     { flexDirection: 'row', alignItems: 'center', gap: 10 },
   orderEmoji:   { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
