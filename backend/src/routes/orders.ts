@@ -9,7 +9,7 @@ const HOLD_MINUTES = 10;
 const ORDER_STATUSES = [
   'CONFIRMED', 'COOKING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED',
 ] as const;
-const PAYMENT_STATUSES = ['HOLD', 'PAID', 'EXPIRED'] as const;
+const PAYMENT_STATUSES = ['HOLD', 'ADVANCE_PAID', 'PAID', 'EXPIRED'] as const;
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -164,7 +164,7 @@ router.put('/:id/status', requireAuth, async (req: AuthRequest, res) => {
 
   const { status: newStatus } = parsed.data;
 
-  if (order.paymentStatus !== 'PAID') {
+  if (order.paymentStatus !== 'PAID' && order.paymentStatus !== 'ADVANCE_PAID') {
     res.status(409).json({ error: 'Order must be paid before status updates can begin' });
     return;
   }
@@ -243,6 +243,7 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
   if (!orderId) return res.status(400).json({ error: 'Order id required' });
   const schema = z.object({
     paymentMethod: z.string().max(40).optional(),
+    paymentType: z.enum(['full', 'advance']).default('full'),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -252,7 +253,7 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
 
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    select: { id: true, buyerId: true, paymentStatus: true, holdUntil: true, requestId: true, chefId: true },
+    select: { id: true, buyerId: true, paymentStatus: true, holdUntil: true, requestId: true, chefId: true, finalPrice: true },
   });
   if (!order) {
     res.status(404).json({ error: 'Order not found' });
@@ -279,11 +280,16 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
     return;
   }
 
+  const isAdvance = parsed.data.paymentType === 'advance';
+  const advancePaid = isAdvance ? Math.ceil(order.finalPrice * 0.2) : null;
   const paymentRef = `DEMO-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+
   await prisma.order.update({
     where: { id: order.id },
     data: {
-      paymentStatus: 'PAID',
+      paymentStatus: isAdvance ? 'ADVANCE_PAID' : 'PAID',
+      paymentType: isAdvance ? 'ADVANCE' : 'FULL',
+      advancePaid,
       paidAt: new Date(),
       paymentRef,
       holdUntil: null,
@@ -302,6 +308,55 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
   });
   if (!updated) {
     res.status(404).json({ error: 'Order not found after payment' });
+    return;
+  }
+
+  res.json({
+    ...updated,
+    request: {
+      ...updated.request,
+      preferences: JSON.parse(updated.request.preferences) as string[],
+    },
+  });
+});
+
+router.post('/:id/pay-balance', requireAuth, async (req: AuthRequest, res) => {
+  const orderId = firstParam(req.params.id);
+  if (!orderId) return res.status(400).json({ error: 'Order id required' });
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, buyerId: true, paymentStatus: true, finalPrice: true, advancePaid: true, chefId: true, requestId: true },
+  });
+  if (!order) {
+    res.status(404).json({ error: 'Order not found' });
+    return;
+  }
+  if (order.buyerId !== req.user!.userId) {
+    res.status(403).json({ error: 'Only the buyer can pay the balance' });
+    return;
+  }
+  if (order.paymentStatus !== 'ADVANCE_PAID') {
+    res.status(409).json({ error: 'Balance payment only applies to advance-paid orders' });
+    return;
+  }
+
+  const balancePaymentRef = `DEMO-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+  await prisma.order.update({
+    where: { id: order.id },
+    data: {
+      paymentStatus: 'PAID',
+      balancePaidAt: new Date(),
+      balancePaymentRef,
+    },
+  });
+
+  const updated = await prisma.order.findUnique({
+    where: { id: order.id },
+    include: ORDER_INCLUDE,
+  });
+  if (!updated) {
+    res.status(404).json({ error: 'Order not found after balance payment' });
     return;
   }
 

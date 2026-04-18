@@ -6,7 +6,7 @@ import { AuthRequest, requireAuth } from '../middleware/auth';
 const router = Router();
 const HOLD_MINUTES = 10;
 
-const OFFER_STATUSES = ['PENDING', 'COUNTERED', 'HOLD', 'PAID', 'REJECTED', 'EXPIRED'] as const;
+const OFFER_STATUSES = ['PENDING', 'COUNTERED', 'HOLD', 'ADVANCE_PAID', 'PAID', 'REJECTED', 'EXPIRED'] as const;
 type OfferStatus = typeof OFFER_STATUSES[number];
 const DIRECT_ORDER_STATUSES = ['CONFIRMED', 'OUT_FOR_DELIVERY', 'DELIVERED'] as const;
 
@@ -34,6 +34,7 @@ const paySchema = z.object({
   buyerToken: z.string().uuid(),
   deliveryMode: z.enum(['pickup', 'delivery']),
   paymentMethod: z.string().max(40).optional(),
+  paymentType: z.enum(['full', 'advance']).default('full'),
 });
 
 const reviewSchema = z.object({
@@ -299,11 +300,15 @@ router.post('/:id/pay', async (req, res) => {
     return;
   }
 
+  const isAdvance = parsed.data.paymentType === 'advance';
+  const advancePaid = isAdvance ? Math.ceil((offer.agreedPrice ?? offer.offerPrice) * offer.plates * 0.2) : null;
   const paymentRef = `DEMO-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
   const updated = await prisma.dishOffer.update({
     where: { id: offer.id },
     data: {
-      status: 'PAID',
+      status: isAdvance ? 'ADVANCE_PAID' : 'PAID',
+      paymentType: isAdvance ? 'ADVANCE' : 'FULL',
+      advancePaid,
       paidAt: new Date(),
       paymentRef,
       deliveryMode: parsed.data.deliveryMode,
@@ -314,6 +319,32 @@ router.post('/:id/pay', async (req, res) => {
   await prisma.user.update({
     where: { id: offer.chefId },
     data: { totalOrders: { increment: 1 } },
+  });
+
+  res.json(updated);
+});
+
+router.post('/:id/pay-balance', async (req, res) => {
+  await expireHeldOffers();
+
+  const offerId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const schema = z.object({ buyerToken: z.string().uuid() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
+
+  const offer = await prisma.dishOffer.findUnique({ where: { id: offerId } });
+  if (!offer) { res.status(404).json({ error: 'Offer not found' }); return; }
+  if (offer.buyerToken !== parsed.data.buyerToken) { res.status(403).json({ error: 'Forbidden' }); return; }
+  if (offer.status !== 'ADVANCE_PAID') { res.status(409).json({ error: 'Balance payment only applies to advance-paid orders' }); return; }
+
+  const balancePaymentRef = `DEMO-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+  const updated = await prisma.dishOffer.update({
+    where: { id: offer.id },
+    data: {
+      status: 'PAID',
+      balancePaidAt: new Date(),
+      balancePaymentRef,
+    },
   });
 
   res.json(updated);
@@ -337,7 +368,7 @@ router.patch('/:id/order-status', requireAuth, async (req: AuthRequest, res) => 
     res.status(403).json({ error: 'Forbidden' });
     return;
   }
-  if (offer.status !== 'PAID') {
+  if (offer.status !== 'PAID' && offer.status !== 'ADVANCE_PAID') {
     res.status(409).json({ error: 'Only paid offers can be updated as orders' });
     return;
   }
@@ -382,7 +413,7 @@ router.post('/:id/review', async (req, res) => {
     res.status(403).json({ error: 'Forbidden' });
     return;
   }
-  if (offer.status !== 'PAID' || offer.orderStatus !== 'DELIVERED') {
+  if ((offer.status !== 'PAID' && offer.status !== 'ADVANCE_PAID') || offer.orderStatus !== 'DELIVERED') {
     res.status(409).json({ error: 'Can only review delivered paid orders' });
     return;
   }

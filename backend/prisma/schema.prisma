@@ -122,7 +122,8 @@ model Quote {
 
 // ─── ORDER ───────────────────────────────────────────────────────────────────
 // status: "CONFIRMED" | "COOKING" | "READY" | "OUT_FOR_DELIVERY" | "DELIVERED" | "CANCELLED"
-// paymentStatus: "HOLD" | "PAID" | "EXPIRED"
+// paymentStatus: "HOLD" | "ADVANCE_PAID" | "PAID" | "EXPIRED"
+// paymentType: "FULL" | "ADVANCE"
 model Order {
   id          String   @id @default(cuid()) @map("_id")
   requestId   String   @unique
@@ -136,9 +137,13 @@ model Order {
   finalPrice  Int
   status      String   @default("CONFIRMED")
   paymentStatus String @default("PAID")
+  paymentType String?
+  advancePaid Int?
   holdUntil   DateTime?
   paymentRef  String?
   paidAt      DateTime?
+  balancePaidAt DateTime?
+  balancePaymentRef String?
   cookingStartedAt DateTime?
   readyAt     DateTime?
   address     String?
@@ -193,8 +198,9 @@ model FcmToken {
 }
 
 // ─── DISH OFFER ───────────────────────────────────────────────────────────────
-// status: "PENDING" | "COUNTERED" | "HOLD" | "PAID" | "REJECTED" | "EXPIRED"
+// status: "PENDING" | "COUNTERED" | "HOLD" | "ADVANCE_PAID" | "PAID" | "REJECTED" | "EXPIRED"
 // lastOfferBy: "BUYER" | "CHEF" — whose turn to respond next
+// paymentType: "FULL" | "ADVANCE"
 // Buyer sends a direct offer on a chef's cooking dish (no auth required from buyer)
 model DishOffer {
   id           String   @id @default(cuid()) @map("_id")
@@ -206,7 +212,9 @@ model DishOffer {
   offerPrice   Int      // current offer price from BUYER side
   exactPriceRequested Boolean @default(false)
   message      String?
-  status       String   @default("PENDING")  // PENDING | COUNTERED | HOLD | PAID | REJECTED | EXPIRED
+  status       String   @default("PENDING")  // PENDING | COUNTERED | HOLD | ADVANCE_PAID | PAID | REJECTED | EXPIRED
+  paymentType  String?  // "FULL" | "ADVANCE"
+  advancePaid  Int?
   counterPrice Int?     // chef's counter price per plate
   counterNote  String?
   agreedPrice  Int?
@@ -215,6 +223,8 @@ model DishOffer {
   orderStatus  String?
   paymentRef   String?
   paidAt       DateTime?
+  balancePaidAt DateTime?
+  balancePaymentRef String?
   reviewRating Int?
   reviewComment String?
   reviewedAt   DateTime?
@@ -223,6 +233,17 @@ model DishOffer {
   dishEmoji    String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// ─── EMAIL OTP ───────────────────────────────────────────────────────────────
+// Short-lived 6-digit codes for email-based login
+model EmailOtp {
+  id        String   @id @default(cuid()) @map("_id")
+  email     String
+  otp       String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
 }
 
 // ─── REFRESH TOKEN ───────────────────────────────────────────────────────────

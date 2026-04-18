@@ -202,7 +202,9 @@ interface DishOfferItem {
   paymentRef?: string | null;
   paidAt?: string | null;
   message?: string;
-  status: 'PENDING' | 'COUNTERED' | 'HOLD' | 'PAID' | 'REJECTED' | 'EXPIRED';
+  status: 'PENDING' | 'COUNTERED' | 'HOLD' | 'ADVANCE_PAID' | 'PAID' | 'REJECTED' | 'EXPIRED';
+  paymentType?: 'FULL' | 'ADVANCE' | null;
+  advancePaid?: number | null;
   counterPrice?: number | null;
   counterNote?: string | null;
   lastOfferBy: 'BUYER' | 'CHEF';
@@ -260,7 +262,9 @@ interface BuyerRequestApi {
     id: string;
     status: 'CONFIRMED' | 'COOKING' | 'READY' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED';
     finalPrice: number;
-    paymentStatus?: 'HOLD' | 'PAID' | 'EXPIRED';
+    paymentStatus?: 'HOLD' | 'ADVANCE_PAID' | 'PAID' | 'EXPIRED';
+    paymentType?: 'FULL' | 'ADVANCE' | null;
+    advancePaid?: number | null;
     holdUntil?: string | null;
     paymentRef?: string | null;
     paidAt?: string | null;
@@ -353,7 +357,9 @@ interface BuyerRequestOrderItem {
   chefId: string;
   finalPrice: number;
   status: 'CONFIRMED' | 'COOKING' | 'READY' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED';
-  paymentStatus: 'HOLD' | 'PAID' | 'EXPIRED';
+  paymentStatus: 'HOLD' | 'ADVANCE_PAID' | 'PAID' | 'EXPIRED';
+  paymentType?: 'FULL' | 'ADVANCE' | null;
+  advancePaid?: number | null;
   holdUntil?: string | null;
   paymentRef?: string | null;
   paidAt?: string | null;
@@ -947,6 +953,22 @@ export default function App() {
   const [authPhone, setAuthPhone] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
+
+  // Email OTP auth flow
+  const [authStep, setAuthStep] = useState<'email' | 'otp' | 'register'>('email');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authOtp, setAuthOtp] = useState('');
+  const [authFirstName, setAuthFirstName] = useState('');
+  const [authLastName, setAuthLastName] = useState('');
+  const [authRegPhone, setAuthRegPhone] = useState('');
+  const [authAddrHouse, setAuthAddrHouse] = useState('');
+  const [authAddrStreet, setAuthAddrStreet] = useState('');
+  const [authAddrCity, setAuthAddrCity] = useState('');
+  const [authAddrPincode, setAuthAddrPincode] = useState('');
+  const [authGpsCoords, setAuthGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [authGpsLabel, setAuthGpsLabel] = useState('');
+  const [authGpsLocating, setAuthGpsLocating] = useState(false);
+  const [otpBusy, setOtpBusy] = useState(false);
   const [selectedCat, setSelectedCat] = useState('1');
   const [feedTab, setFeedTab] = useState<'requests' | 'cooking'>('requests');
   const [cookingFeed, setCookingFeed] = useState<CookingFeedCard[]>([]);
@@ -1384,6 +1406,13 @@ export default function App() {
       const isCooking = !!orderStatus || request.status === 'COOKING' || request.status === 'READY';
       const statusLabel = paymentStatus === 'HOLD'
         ? 'Awaiting Payment'
+        : paymentStatus === 'ADVANCE_PAID'
+        ? (
+          orderStatus === 'OUT_FOR_DELIVERY' ? 'Out for Delivery'
+            : orderStatus === 'READY' ? (request.delivery === 'pickup' ? 'Ready for Pickup' : 'Ready')
+              : orderStatus === 'COOKING' ? 'Cooking Started'
+                : 'Confirmed'
+        )
         : orderStatus
         ? (
           orderStatus === 'OUT_FOR_DELIVERY' ? 'Out for Delivery'
@@ -1410,6 +1439,8 @@ export default function App() {
       const quoteCount = request.quotesCount ?? 0;
       const quoteLabel = paymentStatus === 'HOLD'
         ? `pay within ${holdTimeLeft(request.order?.holdUntil) ?? '10:00'}`
+        : paymentStatus === 'ADVANCE_PAID'
+        ? 'advance paid · balance due'
         : orderStatus
         ? (
           orderStatus === 'OUT_FOR_DELIVERY' ? 'out for delivery'
@@ -1439,18 +1470,18 @@ export default function App() {
       return {
         id: request.id,
         emoji: FOOD_CATEGORIES.find((item) => item.label.toLowerCase() === request.category.toLowerCase())?.emoji ?? 'ÃƒÂ°Ã…Â¸Ã‚ÂÃ‚Â½ÃƒÂ¯Ã‚Â¸Ã‚Â',
-        emojiBg: paymentStatus === 'HOLD' ? C.paleYellow : isCooking ? C.paleGreen : isNegotiating ? C.paleYellow : C.blush,
+        emojiBg: paymentStatus === 'HOLD' ? C.paleYellow : (paymentStatus === 'ADVANCE_PAID' || isCooking) ? C.paleGreen : isNegotiating ? C.paleYellow : C.blush,
         name: request.dishName,
         by: `by You | ${timeAgo(request.createdAt)}`,
         status: statusLabel,
-        statusBg: paymentStatus === 'HOLD' ? C.paleYellow : statusBg,
-        statusColor: paymentStatus === 'HOLD' ? '#B07800' : statusColor,
+        statusBg: paymentStatus === 'HOLD' ? C.paleYellow : paymentStatus === 'ADVANCE_PAID' ? C.paleGreen : statusBg,
+        statusColor: paymentStatus === 'HOLD' ? '#B07800' : paymentStatus === 'ADVANCE_PAID' ? C.mint : statusColor,
         tags: [request.spiceLevel, quantityTag, ...request.preferences.slice(0, 2)],
         price: `\u20B9${primaryRequestPrice}`,
         priceLabel: isCooking ? 'Final negotiated price' : 'Original budget',
         secondaryPrice: secondaryRequestPrice != null ? `\u20B9${secondaryRequestPrice}` : undefined,
         secondaryPriceLabel: secondaryRequestPriceLabel,
-        quotesCount: paymentStatus === 'HOLD' ? 'PAY' : orderStatus ? 'LIVE' : String(quoteCount),
+        quotesCount: paymentStatus === 'HOLD' ? 'PAY' : (paymentStatus === 'ADVANCE_PAID' || orderStatus) ? 'LIVE' : String(quoteCount),
         quotesLabel: quoteLabel,
         quotesBg: paymentStatus === 'HOLD' ? C.turmeric : orderStatus ? C.mint : isCooking ? C.mint : quoteCount > 0 ? C.spice : C.warmGray,
         target: 'request',
@@ -1466,20 +1497,23 @@ export default function App() {
       const negotiatedOfferTotal = (offer.agreedPrice ?? offer.counterPrice ?? offer.offerPrice) * offer.plates;
       const hasNegotiatedDelta = negotiatedOfferTotal !== originalOfferTotal || offer.counterPrice != null || offer.agreedPrice != null;
       const orderStatus = getOfferOrderStatus(offer);
+      const isPaid = offer.status === 'PAID' || offer.status === 'ADVANCE_PAID';
       const statusLabel =
         offer.status === 'COUNTERED'
           ? (offer.lastOfferBy === 'CHEF' ? 'Chef Countered' : 'Counter Sent')
           : offer.status === 'HOLD'
             ? 'Awaiting Payment'
-            : offer.status === 'PAID'
+            : offer.status === 'ADVANCE_PAID'
               ? getOfferOrderStatusLabel(offer)
-              : 'Awaiting Chef';
+              : isPaid
+                ? getOfferOrderStatusLabel(offer)
+                : 'Awaiting Chef';
       const statusBg =
-        offer.status === 'PAID' ? C.paleGreen
+        isPaid ? C.paleGreen
           : offer.status === 'HOLD' || offer.status === 'COUNTERED' ? C.paleYellow
             : C.paleBlue;
       const statusColor =
-        offer.status === 'PAID' ? C.mint
+        isPaid ? C.mint
           : offer.status === 'HOLD' || offer.status === 'COUNTERED' ? '#B07800'
             : '#4F6CF5';
       const quotesLabel =
@@ -1487,17 +1521,19 @@ export default function App() {
           ? (offer.lastOfferBy === 'CHEF' ? 'tap to accept, reject, or counter' : 'waiting for chef reply')
           : offer.status === 'HOLD'
             ? `pay within ${holdTimeLeft(offer.holdUntil) ?? '10:00'}`
-            : offer.status === 'PAID'
-              ? (
-                orderStatus === 'OUT_FOR_DELIVERY' ? 'out for delivery'
-                  : orderStatus === 'DELIVERED' ? 'delivered'
-                    : 'order confirmed'
-              )
-              : 'waiting for chef approval';
+            : offer.status === 'ADVANCE_PAID'
+              ? 'advance paid · balance due'
+              : isPaid
+                ? (
+                  orderStatus === 'OUT_FOR_DELIVERY' ? 'out for delivery'
+                    : orderStatus === 'DELIVERED' ? 'delivered'
+                      : 'order confirmed'
+                )
+                : 'waiting for chef approval';
       return {
         id: `offer-${offer.id}`,
         emoji: offer.dishEmoji,
-        emojiBg: offer.status === 'PAID' ? C.paleGreen : offer.status === 'HOLD' ? C.paleYellow : C.blush,
+        emojiBg: isPaid ? C.paleGreen : offer.status === 'HOLD' ? C.paleYellow : C.blush,
         name: offer.dishName,
         by: `Today board | ${timeAgo(offer.updatedAt)}`,
         status: statusLabel,
@@ -1511,10 +1547,10 @@ export default function App() {
         price: `\u20B9${originalOfferTotal}`,
         priceLabel: 'Original price',
         secondaryPrice: hasNegotiatedDelta ? `\u20B9${negotiatedOfferTotal}` : undefined,
-        secondaryPriceLabel: hasNegotiatedDelta ? (offer.status === 'PAID' ? 'Negotiated total' : 'Negotiated price') : undefined,
-        quotesCount: offer.status === 'HOLD' ? 'PAY' : offer.status === 'COUNTERED' ? 'NEW' : offer.status === 'PAID' ? 'LIVE' : 'OPEN',
+        secondaryPriceLabel: hasNegotiatedDelta ? (isPaid ? 'Negotiated total' : 'Negotiated price') : undefined,
+        quotesCount: offer.status === 'HOLD' ? 'PAY' : offer.status === 'COUNTERED' ? 'NEW' : isPaid ? 'LIVE' : 'OPEN',
         quotesLabel,
-        quotesBg: offer.status === 'PAID' ? C.mint : offer.status === 'HOLD' ? C.turmeric : C.spice,
+        quotesBg: isPaid ? C.mint : offer.status === 'HOLD' ? C.turmeric : C.spice,
         target: 'orders',
         rawOffer: offer,
         activityAt: offer.updatedAt,
@@ -1821,12 +1857,115 @@ export default function App() {
   };
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ My negotiations (buyer's own offers, polled periodically) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+  const sendOtp = async () => {
+    const email = authEmail.trim().toLowerCase();
+    if (!email) { Alert.alert('Enter email', 'Please enter your email address.'); return; }
+    setOtpBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json() as { sent?: boolean; error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to send code');
+      setAuthStep('otp');
+    } catch (err) {
+      Alert.alert('Error', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
+  const verifyOtp = async () => {
+    const email = authEmail.trim().toLowerCase();
+    const otp = authOtp.trim();
+    if (otp.length !== 6) { Alert.alert('Enter code', 'Enter the 6-digit code from your email.'); return; }
+    setOtpBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, otp }),
+      });
+      const data = await res.json() as { isNewUser?: boolean; user?: BuyerProfile; accessToken?: string; refreshToken?: string; error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Verification failed');
+      if (data.isNewUser) {
+        setAuthStep('register');
+      } else {
+        await handleBuyerAuthSuccess({ user: data.user!, accessToken: data.accessToken!, refreshToken: data.refreshToken! });
+      }
+    } catch (err) {
+      Alert.alert('Invalid code', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
+  const detectAuthLocation = async () => {
+    setAuthGpsLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') { Alert.alert('Permission denied', 'Allow location to auto-fill your area.'); return; }
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const { latitude, longitude } = pos.coords;
+      setAuthGpsCoords({ lat: latitude, lng: longitude });
+      const [place] = await Location.reverseGeocodeAsync({ latitude, longitude });
+      if (place) {
+        const cityName = place.city || place.subregion || place.region || '';
+        setAuthAddrCity(cityName);
+        setAuthAddrPincode(place.postalCode ?? '');
+        setAuthAddrStreet(place.street ?? '');
+        setAuthGpsLabel([place.city || place.subregion, place.region].filter(Boolean).join(', '));
+      }
+    } catch {
+      Alert.alert('Error', 'Could not detect location. Please fill in manually.');
+    } finally {
+      setAuthGpsLocating(false);
+    }
+  };
+
+  const completeOtpRegistration = async () => {
+    const firstName = authFirstName.trim();
+    const lastName = authLastName.trim();
+    const phone = authRegPhone.trim();
+    if (!firstName || !lastName) { Alert.alert('Name required', 'Please enter your first and last name.'); return; }
+    if (!/^\d{10}$/.test(phone)) { Alert.alert('Invalid phone', 'Phone number must be exactly 10 digits.'); return; }
+    setOtpBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/register-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: authEmail.trim().toLowerCase(),
+          firstName,
+          lastName,
+          phone,
+          lat: authGpsCoords?.lat,
+          lng: authGpsCoords?.lng,
+          city: authAddrCity.trim() || undefined,
+          houseNo: authAddrHouse.trim() || undefined,
+          street: authAddrStreet.trim() || undefined,
+          pincode: authAddrPincode.trim() || undefined,
+        }),
+      });
+      const data = await res.json() as BuyerAuthResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Registration failed');
+      await handleBuyerAuthSuccess(data);
+    } catch (err) {
+      Alert.alert('Registration failed', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
   const [respondOffer, setRespondOffer] = useState<DishOfferItem | null>(null);
   const [respondPrice, setRespondPrice] = useState('');
   const [respondBusy, setRespondBusy] = useState(false);
   const [checkoutOffer, setCheckoutOffer] = useState<DishOfferItem | null>(null);
   const [checkoutRequestOrder, setCheckoutRequestOrder] = useState<BuyerRequestOrderItem | null>(null);
   const [checkoutDelivery, setCheckoutDelivery] = useState<'pickup' | 'delivery'>('pickup');
+  const [checkoutPaymentType, setCheckoutPaymentType] = useState<'full' | 'advance'>('full');
   const [bringOwnContainer, setBringOwnContainer] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -1968,10 +2107,10 @@ export default function App() {
 
   const holdOrders = myOffers.filter((offer) => offer.status === 'HOLD');
   const pendingApprovalOrders = myOffers.filter((offer) => offer.status === 'PENDING');
-  const placedOrders = myOffers.filter((offer) => offer.status === 'PAID' && getOfferOrderStatus(offer) !== 'DELIVERED');
+  const placedOrders = myOffers.filter((offer) => (offer.status === 'PAID' || offer.status === 'ADVANCE_PAID') && getOfferOrderStatus(offer) !== 'DELIVERED');
   const deliveredOrders = myOffers.filter((offer) => offer.status === 'PAID' && getOfferOrderStatus(offer) === 'DELIVERED');
   const requestHoldOrders = myRequestOrders.filter((order) => order.paymentStatus === 'HOLD');
-  const requestPlacedOrders = myRequestOrders.filter((order) => order.paymentStatus === 'PAID' && order.status !== 'DELIVERED' && order.status !== 'CANCELLED');
+  const requestPlacedOrders = myRequestOrders.filter((order) => (order.paymentStatus === 'PAID' || order.paymentStatus === 'ADVANCE_PAID') && order.status !== 'DELIVERED' && order.status !== 'CANCELLED');
   const requestDeliveredOrders = myRequestOrders.filter((order) => order.paymentStatus === 'PAID' && order.status === 'DELIVERED');
   const recentOrders = [
     ...deliveredOrders.map((offer) => ({
@@ -2136,13 +2275,18 @@ export default function App() {
           buyerToken,
           deliveryMode: checkoutDelivery,
           paymentMethod: 'demo',
+          paymentType: checkoutPaymentType,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error((data as { error?: string }).error ?? 'Payment failed');
       setCheckoutOffer(null);
+      setCheckoutPaymentType('full');
       await loadMyOffers(buyerToken);
-      Alert.alert('Payment successful', 'Your order is confirmed and the chef has been notified.');
+      const msg = checkoutPaymentType === 'advance'
+        ? 'Your order is confirmed with 20% advance. Pay the balance before delivery.'
+        : 'Your order is confirmed and the chef has been notified.';
+      Alert.alert('Payment successful', msg);
     } catch (error) {
       Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete demo payment.');
     } finally {
@@ -2156,16 +2300,47 @@ export default function App() {
     try {
       await buyerApi<BuyerRequestOrderItem>(`/orders/${checkoutRequestOrder.id}/pay`, {
         method: 'POST',
-        body: JSON.stringify({ paymentMethod: 'demo' }),
+        body: JSON.stringify({ paymentMethod: 'demo', paymentType: checkoutPaymentType }),
       });
       setCheckoutRequestOrder(null);
+      setCheckoutPaymentType('full');
       await loadMyRequestOrders();
       await loadMyRequests();
-      Alert.alert('Payment successful', 'Your request order is confirmed and the chef has been notified.');
+      const msg = checkoutPaymentType === 'advance'
+        ? 'Your order is confirmed with 20% advance. Pay the balance before delivery.'
+        : 'Your request order is confirmed and the chef has been notified.';
+      Alert.alert('Payment successful', msg);
     } catch (error) {
       Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete demo payment.');
     } finally {
       setCheckoutBusy(false);
+    }
+  };
+
+  const payBalanceForOffer = async (offer: DishOfferItem) => {
+    if (!buyerToken) return;
+    try {
+      const res = await fetch(`${API_BASE}/offers/${offer.id}/pay-balance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buyerToken }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data as { error?: string }).error ?? 'Payment failed');
+      await loadMyOffers(buyerToken);
+      Alert.alert('Balance paid', 'Your remaining balance has been paid. Thank you!');
+    } catch (error) {
+      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete balance payment.');
+    }
+  };
+
+  const payBalanceForRequestOrder = async (order: BuyerRequestOrderItem) => {
+    try {
+      await buyerApi<BuyerRequestOrderItem>(`/orders/${order.id}/pay-balance`, { method: 'POST', body: JSON.stringify({}) });
+      await loadMyRequestOrders();
+      Alert.alert('Balance paid', 'Your remaining balance has been paid. Thank you!');
+    } catch (error) {
+      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete balance payment.');
     }
   };
 
@@ -2615,87 +2790,108 @@ export default function App() {
       </Modal>
 
       {!booting && screen === 'auth' ? (
-        <ScrollView style={styles.scroll} contentContainerStyle={authSt.scrollContent} keyboardShouldPersistTaps="handled">
-          <View style={authSt.hero}>
-            <Text style={authSt.kicker}>BUYER ACCESS</Text>
-            <Text style={authSt.title}>Sign in to post cravings, track quotes, and manage orders.</Text>
-            <Text style={authSt.sub}>Your requests, negotiations, payments, and review reminders stay tied to one buyer account.</Text>
-          </View>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView style={styles.scroll} contentContainerStyle={authSt.scrollContent} keyboardShouldPersistTaps="handled">
 
-          <View style={authSt.modeRow}>
-            <TouchableOpacity
-              style={[authSt.modeBtn, authMode === 'login' && authSt.modeBtnActive]}
-              activeOpacity={0.85}
-              onPress={() => setAuthMode('login')}
-            >
-              <Text style={[authSt.modeText, authMode === 'login' && authSt.modeTextActive]}>Login</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[authSt.modeBtn, authMode === 'register' && authSt.modeBtnActive]}
-              activeOpacity={0.85}
-              onPress={() => setAuthMode('register')}
-            >
-              <Text style={[authSt.modeText, authMode === 'register' && authSt.modeTextActive]}>Create Account</Text>
-            </TouchableOpacity>
-          </View>
+            {/* ── Brand header ─────────────────────────────────── */}
+            <View style={authSt.brand}>
+              <Image source={require('./assets/buyer-icon.png')} style={authSt.brandIcon} resizeMode="contain" />
+              <View style={authSt.brandRow}>
+                <Text style={authSt.brandFood}>food</Text>
+                <Text style={authSt.brandSood}>sood</Text>
+              </View>
+              <Text style={authSt.brandTagline}>
+                {authStep === 'register' ? 'Complete your profile' : authStep === 'otp' ? 'Check your inbox' : 'Sign in or create account'}
+              </Text>
+            </View>
 
-          <View style={authSt.card}>
-            {authMode === 'register' ? (
-              <View style={styles.fieldGroup}>
-                <FieldLabel text="Full Name" />
+            {/* ── Step 1: Email entry ───────────────────────────── */}
+            {authStep === 'email' ? (
+              <View style={authSt.card}>
+                <Text style={authSt.stepLabel}>Your email address</Text>
                 <TextInput
-                  style={styles.input}
-                  value={authName}
-                  onChangeText={setAuthName}
-                  placeholder="Enter your full name"
+                  style={authSt.emailInput}
+                  value={authEmail}
+                  onChangeText={setAuthEmail}
+                  placeholder="you@example.com"
                   placeholderTextColor="#BDB5AB"
-                  autoCapitalize="words"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                 />
+                <TouchableOpacity style={[authSt.submitBtn, otpBusy && { opacity: 0.6 }]} activeOpacity={0.85} disabled={otpBusy} onPress={sendOtp}>
+                  <Text style={authSt.submitBtnText}>{otpBusy ? 'Sending…' : 'Send Verification Code'}</Text>
+                </TouchableOpacity>
+                <Text style={authSt.footNote}>We'll send a 6-digit code to this email. New users will be asked to complete a quick profile.</Text>
               </View>
             ) : null}
 
-            <View style={styles.fieldGroup}>
-              <FieldLabel text="Phone Number" />
-              <TextInput
-                style={styles.input}
-                value={authPhone}
-                onChangeText={setAuthPhone}
-                placeholder="Enter your phone number"
-                placeholderTextColor="#BDB5AB"
-                keyboardType="phone-pad"
-              />
-            </View>
+            {/* ── Step 2: OTP entry ─────────────────────────────── */}
+            {authStep === 'otp' ? (
+              <View style={authSt.card}>
+                <Text style={authSt.stepLabel}>Verification code</Text>
+                <Text style={authSt.stepSub}>Sent to <Text style={authSt.emailHighlight}>{authEmail}</Text></Text>
+                <TextInput
+                  style={authSt.otpInput}
+                  value={authOtp}
+                  onChangeText={(v) => setAuthOtp(v.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="• • • • • •"
+                  placeholderTextColor="#BDB5AB"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  textAlign="center"
+                />
+                <TouchableOpacity style={[authSt.submitBtn, otpBusy && { opacity: 0.6 }]} activeOpacity={0.85} disabled={otpBusy} onPress={verifyOtp}>
+                  <Text style={authSt.submitBtnText}>{otpBusy ? 'Verifying…' : 'Verify Code'}</Text>
+                </TouchableOpacity>
+                <View style={authSt.resendRow}>
+                  <Text style={authSt.footNote}>Didn't receive it?  </Text>
+                  <TouchableOpacity activeOpacity={0.75} onPress={sendOtp} disabled={otpBusy}>
+                    <Text style={authSt.switchLink}>Resend</Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity style={{ marginTop: 6 }} activeOpacity={0.75} onPress={() => { setAuthStep('email'); setAuthOtp(''); }}>
+                  <Text style={[authSt.footNote, { textAlign: 'center' }]}>← Change email</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
-            <View style={styles.fieldGroup}>
-              <FieldLabel text="Password" />
-              <TextInput
-                style={styles.input}
-                value={authPassword}
-                onChangeText={setAuthPassword}
-                placeholder={authMode === 'register' ? 'Choose a password' : 'Enter your password'}
-                placeholderTextColor="#BDB5AB"
-                secureTextEntry
-              />
-            </View>
+            {/* ── Step 3: Registration form (new users only) ────── */}
+            {authStep === 'register' ? (
+              <View style={authSt.card}>
+                <Text style={authSt.sectionTitle}>Your name</Text>
+                <View style={authSt.nameRow}>
+                  <TextInput style={[authSt.emailInput, { flex: 1 }]} value={authFirstName} onChangeText={setAuthFirstName} placeholder="First name" placeholderTextColor="#BDB5AB" autoCapitalize="words" />
+                  <TextInput style={[authSt.emailInput, { flex: 1 }]} value={authLastName} onChangeText={setAuthLastName} placeholder="Last name" placeholderTextColor="#BDB5AB" autoCapitalize="words" />
+                </View>
 
-            <View style={authSt.metaCard}>
-              <Text style={authSt.metaTitle}>Account will use</Text>
-              <Text style={authSt.metaText}>Location: {location}</Text>
-              <Text style={authSt.metaText}>Role: Buyer</Text>
-            </View>
+                <Text style={[authSt.sectionTitle, { marginTop: 18 }]}>Phone number</Text>
+                <TextInput style={authSt.emailInput} value={authRegPhone} onChangeText={(v) => setAuthRegPhone(v.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" placeholderTextColor="#BDB5AB" keyboardType="phone-pad" maxLength={10} />
 
-            <TouchableOpacity
-              style={[styles.submitBtn, authBusy && { opacity: 0.6 }]}
-              activeOpacity={0.85}
-              disabled={authBusy}
-              onPress={submitBuyerAuth}
-            >
-              <Text style={styles.submitBtnText}>
-                {authBusy ? 'Please wait...' : authMode === 'register' ? 'Create Buyer Account' : 'Login'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
+                <View style={authSt.locRow}>
+                  <Text style={[authSt.sectionTitle, { flex: 1, marginTop: 18 }]}>Location</Text>
+                  <TouchableOpacity style={authSt.gpsBtn} activeOpacity={0.8} onPress={detectAuthLocation} disabled={authGpsLocating}>
+                    <Text style={authSt.gpsBtnText}>{authGpsLocating ? 'Detecting…' : authGpsLabel ? '✓ Detected' : '📍 Auto-detect'}</Text>
+                  </TouchableOpacity>
+                </View>
+                {authGpsLabel ? <Text style={authSt.gpsLabel}>{authGpsLabel}</Text> : null}
+
+                <Text style={[authSt.sectionTitle, { marginTop: 18 }]}>Address details</Text>
+                <TextInput style={authSt.emailInput} value={authAddrHouse} onChangeText={setAuthAddrHouse} placeholder="House / Flat / Building no." placeholderTextColor="#BDB5AB" />
+                <TextInput style={[authSt.emailInput, { marginTop: 8 }]} value={authAddrStreet} onChangeText={setAuthAddrStreet} placeholder="Street / Area / Locality" placeholderTextColor="#BDB5AB" />
+                <View style={[authSt.nameRow, { marginTop: 8 }]}>
+                  <TextInput style={[authSt.emailInput, { flex: 1 }]} value={authAddrCity} onChangeText={setAuthAddrCity} placeholder="City" placeholderTextColor="#BDB5AB" />
+                  <TextInput style={[authSt.emailInput, { flex: 1 }]} value={authAddrPincode} onChangeText={(v) => setAuthAddrPincode(v.replace(/\D/g, '').slice(0, 6))} placeholder="Pincode" placeholderTextColor="#BDB5AB" keyboardType="number-pad" maxLength={6} />
+                </View>
+
+                <TouchableOpacity style={[authSt.submitBtn, { marginTop: 24 }, otpBusy && { opacity: 0.6 }]} activeOpacity={0.85} disabled={otpBusy} onPress={completeOtpRegistration}>
+                  <Text style={authSt.submitBtnText}>{otpBusy ? 'Creating account…' : 'Create Account'}</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+          </ScrollView>
+        </KeyboardAvoidingView>
       ) : null}
 
       {!booting && screen === 'home' ? (
@@ -3424,10 +3620,10 @@ export default function App() {
                   ) : (
                     <>
                       {placedOrders.map((offer) => (
-                        <PlacedOrderCard key={offer.id} offer={offer} />
+                        <PlacedOrderCard key={offer.id} offer={offer} onPayBalance={offer.status === 'ADVANCE_PAID' ? () => payBalanceForOffer(offer) : undefined} />
                       ))}
                       {requestPlacedOrders.map((order) => (
-                        <RequestPlacedOrderCard key={order.id} order={order} />
+                        <RequestPlacedOrderCard key={order.id} order={order} onPayBalance={order.paymentStatus === 'ADVANCE_PAID' ? () => payBalanceForRequestOrder(order) : undefined} />
                       ))}
                     </>
                   )
@@ -3746,8 +3942,8 @@ export default function App() {
         </View>
       </Modal>
 
-      <Modal visible={checkoutOffer !== null || checkoutRequestOrder !== null} transparent animationType="slide" onRequestClose={() => { setCheckoutOffer(null); setCheckoutRequestOrder(null); }}>
-        <TouchableOpacity style={locSt.backdrop} activeOpacity={1} onPress={() => { setCheckoutOffer(null); setCheckoutRequestOrder(null); }} />
+      <Modal visible={checkoutOffer !== null || checkoutRequestOrder !== null} transparent animationType="slide" onRequestClose={() => { setCheckoutOffer(null); setCheckoutRequestOrder(null); setCheckoutPaymentType('full'); }}>
+        <TouchableOpacity style={locSt.backdrop} activeOpacity={1} onPress={() => { setCheckoutOffer(null); setCheckoutRequestOrder(null); setCheckoutPaymentType('full'); }} />
         <View style={orderTabSt.checkoutSheet}>
           <View style={pubSt.bargainHandle} />
           <Text style={orderTabSt.checkoutTitle}>Confirm Order</Text>
@@ -3794,8 +3990,21 @@ export default function App() {
             const baseTotal = checkoutOffer ? (checkoutOffer.agreedPrice ?? checkoutOffer.offerPrice) * checkoutOffer.plates : checkoutRequestOrder?.finalPrice ?? 0;
             const pickupDiscount = checkoutOffer && checkoutDelivery === 'pickup' ? Math.min(Math.round(baseTotal * 0.05), 30) : 0;
             const finalTotal = baseTotal - pickupDiscount;
+            const advanceAmount = Math.ceil(finalTotal * 0.2);
+            const balanceDue = finalTotal - advanceAmount;
+            const payNow = checkoutPaymentType === 'advance' ? advanceAmount : finalTotal;
             return (
               <>
+                <Text style={orderTabSt.checkoutLabel}>Payment option</Text>
+                <View style={orderTabSt.deliveryRow}>
+                  <TouchableOpacity style={[orderTabSt.deliveryChip, checkoutPaymentType === 'full' && orderTabSt.deliveryChipActive]} activeOpacity={0.8} onPress={() => setCheckoutPaymentType('full')}>
+                    <Text style={[orderTabSt.deliveryChipText, checkoutPaymentType === 'full' && orderTabSt.deliveryChipTextActive]}>Full Payment</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[orderTabSt.deliveryChip, checkoutPaymentType === 'advance' && orderTabSt.deliveryChipActive]} activeOpacity={0.8} onPress={() => setCheckoutPaymentType('advance')}>
+                    <Text style={[orderTabSt.deliveryChipText, checkoutPaymentType === 'advance' && orderTabSt.deliveryChipTextActive]}>Pay 20% Advance</Text>
+                  </TouchableOpacity>
+                </View>
+
                 <View style={orderTabSt.demoPayCard}>
                   <Text style={orderTabSt.demoPayLabel}>Order Summary</Text>
                   <View style={orderTabSt.payBreakdown}>
@@ -3810,16 +4019,33 @@ export default function App() {
                       </View>
                     ) : null}
                     <View style={orderTabSt.payDivider} />
-                    <View style={orderTabSt.payRow}>
-                      <Text style={orderTabSt.payTotalLabel}>You pay</Text>
-                      <Text style={orderTabSt.payTotalValue}>Rs {finalTotal}</Text>
-                    </View>
+                    {checkoutPaymentType === 'advance' ? (
+                      <>
+                        <View style={orderTabSt.payRow}>
+                          <Text style={orderTabSt.payTotalLabel}>Pay now (20% advance)</Text>
+                          <Text style={orderTabSt.payTotalValue}>Rs {advanceAmount}</Text>
+                        </View>
+                        <View style={orderTabSt.payRow}>
+                          <Text style={orderTabSt.payRowLabel}>Balance due later</Text>
+                          <Text style={orderTabSt.payRowValue}>Rs {balanceDue}</Text>
+                        </View>
+                      </>
+                    ) : (
+                      <View style={orderTabSt.payRow}>
+                        <Text style={orderTabSt.payTotalLabel}>You pay</Text>
+                        <Text style={orderTabSt.payTotalValue}>Rs {finalTotal}</Text>
+                      </View>
+                    )}
                   </View>
-                  <Text style={orderTabSt.demoPaySub}>Test payment only. No real money will be charged.</Text>
+                  {checkoutPaymentType === 'advance' ? (
+                    <Text style={orderTabSt.demoPaySub}>Minimum 20% required to confirm. Pay balance before delivery.</Text>
+                  ) : (
+                    <Text style={orderTabSt.demoPaySub}>Test payment only. No real money will be charged.</Text>
+                  )}
                 </View>
 
                 <TouchableOpacity style={[orderTabSt.payBtn, checkoutBusy && { opacity: 0.6 }]} activeOpacity={0.85} disabled={checkoutBusy} onPress={checkoutOffer ? payForOffer : payForRequestOrder}>
-                  <Text style={orderTabSt.payBtnText}>{checkoutBusy ? 'Processing...' : `Pay Rs ${finalTotal}`}</Text>
+                  <Text style={orderTabSt.payBtnText}>{checkoutBusy ? 'Processing...' : `Pay Rs ${payNow}`}</Text>
                 </TouchableOpacity>
               </>
             );
@@ -5513,8 +5739,10 @@ function PendingApprovalCard({ offer }: { offer: DishOfferItem }) {
   );
 }
 
-function PlacedOrderCard({ offer }: { offer: DishOfferItem }) {
+function PlacedOrderCard({ offer, onPayBalance }: { offer: DishOfferItem; onPayBalance?: () => void }) {
   const orderStatusLabel = getOfferOrderStatusLabel(offer);
+  const totalPrice = (offer.agreedPrice ?? offer.offerPrice) * offer.plates;
+  const balanceDue = offer.status === 'ADVANCE_PAID' && offer.advancePaid != null ? totalPrice - offer.advancePaid : null;
   return (
     <View style={orderTabSt.placedCard}>
       <View style={orderTabSt.cardTop}>
@@ -5525,6 +5753,9 @@ function PlacedOrderCard({ offer }: { offer: DishOfferItem }) {
           <Text style={orderTabSt.cardName}>{offer.dishName}</Text>
           <Text style={orderTabSt.cardMeta}>{offer.plates} plate{offer.plates > 1 ? 's' : ''} · ₹{offer.agreedPrice ?? offer.offerPrice}/plate</Text>
           <Text style={orderTabSt.placedTime}>Paid {timeAgo(offer.paidAt ?? offer.updatedAt)} · {offer.deliveryMode === 'delivery' ? 'Delivery' : 'Pickup'}</Text>
+          {offer.status === 'ADVANCE_PAID' ? (
+            <Text style={orderTabSt.advanceBadge}>20% advance paid · Balance: ₹{balanceDue}</Text>
+          ) : null}
         </View>
         <View style={orderTabSt.placedBadge}>
           <Text style={orderTabSt.placedBadgeText}>{orderStatusLabel}</Text>
@@ -5532,19 +5763,25 @@ function PlacedOrderCard({ offer }: { offer: DishOfferItem }) {
       </View>
       <View style={orderTabSt.placedFooter}>
         <Text style={orderTabSt.placedFooterLabel}>Ref: {offer.paymentRef ?? 'DEMO'}</Text>
-        <Text style={orderTabSt.placedFooterValue}>₹{(offer.agreedPrice ?? offer.offerPrice) * offer.plates}</Text>
+        <Text style={orderTabSt.placedFooterValue}>₹{totalPrice}</Text>
       </View>
+      {offer.status === 'ADVANCE_PAID' && onPayBalance ? (
+        <TouchableOpacity style={orderTabSt.payBalanceBtn} activeOpacity={0.85} onPress={onPayBalance}>
+          <Text style={orderTabSt.payBalanceBtnText}>Pay Balance  ₹{balanceDue}</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
 
-function RequestPlacedOrderCard({ order }: { order: BuyerRequestOrderItem }) {
+function RequestPlacedOrderCard({ order, onPayBalance }: { order: BuyerRequestOrderItem; onPayBalance?: () => void }) {
   const orderStatusLabel =
     order.status === 'OUT_FOR_DELIVERY' ? 'Dispatched'
       : order.status === 'DELIVERED' ? 'Delivered'
         : order.status === 'READY' ? 'Ready'
           : order.status === 'COOKING' ? 'Cooking'
             : 'Confirmed';
+  const balanceDue = order.paymentStatus === 'ADVANCE_PAID' && order.advancePaid != null ? order.finalPrice - order.advancePaid : null;
 
   return (
     <View style={orderTabSt.placedCard}>
@@ -5556,6 +5793,9 @@ function RequestPlacedOrderCard({ order }: { order: BuyerRequestOrderItem }) {
           <Text style={orderTabSt.placedName}>{order.request.dishName}</Text>
           <Text style={orderTabSt.placedMeta}>Request order · ₹{order.finalPrice}</Text>
           <Text style={orderTabSt.placedTime}>Paid {timeAgo(order.paidAt ?? order.updatedAt)} · {order.request.delivery === 'delivery' ? 'Home delivery' : 'Self pickup'}</Text>
+          {order.paymentStatus === 'ADVANCE_PAID' ? (
+            <Text style={orderTabSt.advanceBadge}>20% advance paid · Balance: ₹{balanceDue}</Text>
+          ) : null}
           {order.status === 'COOKING' && order.readyAt ? (
             <Text style={orderTabSt.cookingTimer}>🍳 Ready in {countdownTo(order.readyAt) ?? '0m 00s'}</Text>
           ) : null}
@@ -5568,6 +5808,11 @@ function RequestPlacedOrderCard({ order }: { order: BuyerRequestOrderItem }) {
         <Text style={orderTabSt.placedFooterLabel}>{orderStatusLabel} · Payment ref {order.paymentRef ?? "DEMO"}</Text>
         <Text style={orderTabSt.placedFooterValue}>₹{order.finalPrice}</Text>
       </View>
+      {order.paymentStatus === 'ADVANCE_PAID' && onPayBalance ? (
+        <TouchableOpacity style={orderTabSt.payBalanceBtn} activeOpacity={0.85} onPress={onPayBalance}>
+          <Text style={orderTabSt.payBalanceBtnText}>Pay Balance  ₹{balanceDue}</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -6312,20 +6557,37 @@ const authSt = StyleSheet.create({
   bootBadgeText: { color: C.turmeric, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
   bootTitle: { fontSize: 24, fontWeight: '800', color: C.ink, textAlign: 'center' },
   bootSub: { marginTop: 8, fontSize: 13, lineHeight: 20, color: C.warmGray, textAlign: 'center' },
-  scrollContent: { padding: 18, paddingBottom: 40 },
-  hero: { marginTop: 20, backgroundColor: C.ink, borderRadius: 24, padding: 22 },
-  kicker: { fontSize: 10, fontWeight: '800', color: C.turmeric, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 },
-  title: { fontSize: 27, lineHeight: 34, fontWeight: '800', color: C.white },
-  sub: { marginTop: 10, fontSize: 13, lineHeight: 20, color: 'rgba(255,255,255,0.68)' },
-  modeRow: { flexDirection: 'row', gap: 10, marginTop: 18 },
-  modeBtn: { flex: 1, borderRadius: 14, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.white, alignItems: 'center', paddingVertical: 13 },
-  modeBtnActive: { borderColor: C.spice, backgroundColor: '#FFF1EA' },
-  modeText: { fontSize: 13, fontWeight: '700', color: C.warmGray },
-  modeTextActive: { color: C.spice },
-  card: { marginTop: 16, backgroundColor: C.white, borderRadius: 22, borderWidth: 1, borderColor: C.border, padding: 18 },
-  metaCard: { backgroundColor: C.cream, borderRadius: 14, borderWidth: 1, borderColor: C.border, padding: 14, marginBottom: 18 },
-  metaTitle: { fontSize: 10, fontWeight: '800', color: C.warmGray, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 },
-  metaText: { fontSize: 13, color: C.ink, marginTop: 2 },
+  scrollContent: { flexGrow: 1, paddingHorizontal: 22, paddingBottom: 48 },
+  brand: { alignItems: 'center', marginTop: 56, marginBottom: 28 },
+  brandIcon: { width: 72, height: 72, borderRadius: 18, marginBottom: 14 },
+  brandRow: { flexDirection: 'row', alignItems: 'baseline' },
+  brandFood: { fontSize: 38, fontWeight: '900', color: C.ink, letterSpacing: -1 },
+  brandSood: { fontSize: 38, fontWeight: '900', color: C.spice, letterSpacing: -1 },
+  brandTagline: { marginTop: 8, fontSize: 15, color: C.warmGray, fontWeight: '500' },
+  card: { backgroundColor: C.white, borderRadius: 24, padding: 22, shadowColor: 'rgba(26,38,32,0.08)', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 1, shadowRadius: 20, elevation: 4 },
+  stepLabel: { fontSize: 13, fontWeight: '800', color: C.ink, marginBottom: 10, letterSpacing: 0.2 },
+  stepSub: { fontSize: 13, color: C.warmGray, marginBottom: 16 },
+  emailHighlight: { color: C.ink, fontWeight: '700' },
+  emailInput: { backgroundColor: C.cream, borderRadius: 14, borderWidth: 1, borderColor: C.border, paddingHorizontal: 16, paddingVertical: 14, fontSize: 15, color: C.ink, marginBottom: 4 },
+  otpInput: { backgroundColor: C.cream, borderRadius: 16, borderWidth: 1.5, borderColor: C.border, paddingVertical: 18, fontSize: 32, fontWeight: '800', color: C.ink, letterSpacing: 14, marginBottom: 4 },
+  submitBtn: { backgroundColor: C.ink, borderRadius: 16, paddingVertical: 16, alignItems: 'center', marginTop: 14, marginBottom: 4 },
+  submitBtnText: { color: C.white, fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
+  footNote: { fontSize: 12, color: C.warmGray, lineHeight: 18, marginTop: 10 },
+  resendRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  switchLink: { color: C.spice, fontWeight: '700', fontSize: 13 },
+  sectionTitle: { fontSize: 12, fontWeight: '800', color: '#44584E', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 8 },
+  nameRow: { flexDirection: 'row', gap: 10 },
+  locRow: { flexDirection: 'row', alignItems: 'center' },
+  gpsBtn: { backgroundColor: C.paleGreen, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginTop: 14 },
+  gpsBtnText: { fontSize: 12, fontWeight: '700', color: C.mint },
+  gpsLabel: { fontSize: 12, color: C.mint, fontWeight: '600', marginTop: 4, marginBottom: 2 },
+  // unused legacy keys kept to avoid TS errors on other screens
+  modeRow: { flexDirection: 'row', gap: 8, marginBottom: 20 },
+  modeBtn: { flex: 1, borderRadius: 12, alignItems: 'center', paddingVertical: 12 },
+  modeBtnActive: { backgroundColor: C.white },
+  modeText: { fontSize: 14, fontWeight: '600', color: C.warmGray },
+  modeTextActive: { color: C.ink, fontWeight: '700' },
+  switchText: { textAlign: 'center', fontSize: 13, color: C.warmGray },
 });
 
 const orderTabSt = StyleSheet.create({
@@ -6436,6 +6698,9 @@ const orderTabSt = StyleSheet.create({
   placedFooter: { marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#EEF1EC', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   placedFooterLabel: { fontSize: 11, color: '#7B877F', flex: 1, paddingRight: 10 },
   placedFooterValue: { fontSize: 19, fontWeight: '900', color: '#1A2620', letterSpacing: -0.4 },
+  advanceBadge: { fontSize: 11, color: '#B07800', fontWeight: '700', marginTop: 3 },
+  payBalanceBtn: { marginTop: 10, backgroundColor: '#1D6B54', borderRadius: 14, paddingVertical: 11, alignItems: 'center' },
+  payBalanceBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800', letterSpacing: 0.2 },
   historyWrap: { marginBottom: 2 },
   payBtn: {
     marginTop: 14,
