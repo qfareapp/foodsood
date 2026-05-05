@@ -5,7 +5,7 @@ import prisma from '../lib/prisma';
 
 const router = Router();
 const ADMIN_USERNAME = process.env.ADMIN_PANEL_USERNAME ?? 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PANEL_PASSWORD ?? 'change-me-admin-password';
+const ADMIN_PASSWORD = process.env.ADMIN_PANEL_PASSWORD ?? 'password';
 const ADMIN_SECRET = process.env.ADMIN_PANEL_SECRET ?? process.env.JWT_ACCESS_SECRET ?? 'admin-secret-change-me';
 const ADMIN_EXPIRES_IN = '12h';
 

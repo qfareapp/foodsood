@@ -45,6 +45,7 @@ model User {
   savedByUsers    SavedChef[]    @relation("SavedChef")
   fcmTokens       FcmToken[]
   refreshTokens   RefreshToken[]
+  marketPrices    MarketPriceEntry[]
 }
 
 // ─── REQUEST ─────────────────────────────────────────────────────────────────
@@ -254,4 +255,22 @@ model RefreshToken {
   token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
+}
+
+model MarketPriceEntry {
+  id               String   @id @default(cuid()) @map("_id")
+  chefId           String
+  chef             User     @relation(fields: [chefId], references: [id])
+  cityKey          String
+  cityLabel        String
+  itemKey          String
+  itemLabel        String
+  category         String
+  unit             String
+  price            Float
+  submittedForDate DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([chefId, cityKey, itemKey, submittedForDate])
 }

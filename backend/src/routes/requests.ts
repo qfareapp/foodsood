@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { notifyChefs } from '../lib/fcm';
 import { haversineKm } from '../lib/geo';
 import prisma from '../lib/prisma';
+import { expireStaleRequests } from '../lib/requestExpiry';
 import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth';
 
 const router = Router();
@@ -109,6 +110,15 @@ const WITH_QUOTE_COUNT = {
     select: { id: true, name: true, avatar: true, city: true, rating: true },
   },
 } as const;
+
+router.use(async (_req, _res, next) => {
+  try {
+    await expireStaleRequests();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ── GET /api/requests  (nearby feed) ────────────────────────────────────────
 // Query params: lat, lng, radiusKm (default 5), category, status, limit (default 20), offset

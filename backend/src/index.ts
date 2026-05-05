@@ -6,6 +6,7 @@ import path from 'path';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
 import cookingRoutes from './routes/cooking';
+import marketPriceRoutes from './routes/marketPrices';
 import offerRoutes from './routes/offers';
 import orderRoutes from './routes/orders';
 import quoteRoutes from './routes/quotes';
@@ -16,6 +17,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
+const HOST = process.env.HOST ?? '0.0.0.0';
 
 app.use(cors());
 app.use(express.json());
@@ -24,6 +26,7 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cooking', cookingRoutes);
+app.use('/api/market-prices', marketPriceRoutes);
 app.use('/api/requests', requestRoutes);
 app.use('/api/quotes', quoteRoutes);
 app.use('/api/orders', orderRoutes);
@@ -45,8 +48,8 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-app.listen(PORT, () => {
-  console.log(`NeighbourBites API running on http://localhost:${PORT}`);
+app.listen(Number(PORT), HOST, () => {
+  console.log(`NeighbourBites API running on http://${HOST}:${PORT}`);
 });
 
 export default app;

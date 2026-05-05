@@ -28,6 +28,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Auth,
   Cooking,
+  MarketPrices,
   Offers,
   Orders,
   Quotes,
@@ -37,6 +38,7 @@ import {
   type CookingDishItem,
   type CreateCookingDishPayload,
   type DishOffer,
+  type MarketPriceCatalogItem,
   type OrderItem,
   type OrderStatus,
   type QuoteItem,
@@ -46,6 +48,26 @@ import {
 } from './src/api';
 
 const SW = Dimensions.get('window').width;
+const MARKET_PRICE_DEFAULT_ITEMS = [
+  { key: 'fish_rohu', label: 'Rohu', category: 'Fish' },
+  { key: 'fish_katla', label: 'Katla', category: 'Fish' },
+  { key: 'fish_hilsa', label: 'Hilsa', category: 'Fish' },
+  { key: 'fish_prawns', label: 'Prawns', category: 'Fish' },
+  { key: 'meat_chicken', label: 'Chicken', category: 'Meat' },
+  { key: 'meat_mutton', label: 'Mutton', category: 'Meat' },
+  { key: 'veg_potato', label: 'Potato', category: 'Veg' },
+  { key: 'veg_onion', label: 'Onion', category: 'Veg' },
+  { key: 'veg_tomato', label: 'Tomato', category: 'Veg' },
+  { key: 'veg_seasonal', label: 'Seasonal Veg', category: 'Veg' },
+] as const;
+
+function getLocalDateKey(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -377,6 +399,12 @@ export default function App() {
   const [dishOffers, setDishOffers] = useState<DishOffer[]>([]);
   const [loading, setLoading]     = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showMarketPricePrompt, setShowMarketPricePrompt] = useState(false);
+  const [marketPriceBusy, setMarketPriceBusy] = useState(false);
+  const [marketPriceCity, setMarketPriceCity] = useState('');
+  const [marketPriceCatalog, setMarketPriceCatalog] = useState<MarketPriceCatalogItem[]>([]);
+  const [marketPriceValues, setMarketPriceValues] = useState<Record<string, string>>({});
+  const marketPricePromptSessionRef = useRef<string | null>(null);
   const pushTokenRef = useRef<string | null>(null);
   const pushRegisteredUserIdRef = useRef<string | null>(null);
   const notificationReceivedSubRef = useRef<{ remove: () => void } | null>(null);
@@ -439,6 +467,46 @@ export default function App() {
     }
   }, []);
 
+  const maybeShowMarketPricePrompt = useCallback(async (profile: UserProfile) => {
+    const sessionKey = `${profile.id}:${getLocalDateKey()}`;
+    if (marketPricePromptSessionRef.current === sessionKey) return;
+
+    try {
+      const [catalog, mineToday] = await Promise.all([
+        MarketPrices.catalog(),
+        MarketPrices.mineToday(),
+      ]);
+      const seededValues: Record<string, string> = {};
+      mineToday.entries.forEach((entry) => {
+        seededValues[entry.itemKey] = String(Math.round(entry.price));
+      });
+      setMarketPriceCatalog(catalog);
+      setMarketPriceValues(seededValues);
+      setMarketPriceCity(mineToday.city || profile.city || profile.location || '');
+      if (mineToday.entries.length > 0) {
+        marketPricePromptSessionRef.current = sessionKey;
+        setShowMarketPricePrompt(false);
+        return;
+      }
+    } catch {
+      setMarketPriceCatalog(MARKET_PRICE_DEFAULT_ITEMS.map((item) => ({
+        key: item.key,
+        label: item.label,
+        category: item.category.toLowerCase(),
+        unit: 'kg',
+      })));
+      setMarketPriceValues({});
+      setMarketPriceCity(profile.city || profile.location || '');
+    }
+
+    marketPricePromptSessionRef.current = sessionKey;
+    setShowMarketPricePrompt(true);
+  }, []);
+
+  const dismissMarketPricePrompt = useCallback(async () => {
+    setShowMarketPricePrompt(false);
+  }, []);
+
   // ── Boot: check stored token ──────────────────────────────────────────
   useEffect(() => {
     (async () => {
@@ -449,6 +517,7 @@ export default function App() {
           setUser(me);
           syncLocationFromUser(me);
           await registerPushToken(me);
+          await maybeShowMarketPricePrompt(me);
           setScreen('home');
           await loadHomeData(
             typeof me.lat === 'number' && typeof me.lng === 'number' ? { lat: me.lat, lng: me.lng } : null,
@@ -460,7 +529,7 @@ export default function App() {
         }
       }
     })();
-  }, [registerPushToken, syncLocationFromUser, unregisterPushToken]);
+  }, [maybeShowMarketPricePrompt, registerPushToken, syncLocationFromUser, unregisterPushToken]);
 
   // ── Periodic poll for new requests (every 30s on home) ────────────────
   useEffect(() => {
@@ -655,14 +724,26 @@ export default function App() {
   const handleLogin = async (me: UserProfile) => {
     setUser(me);
     syncLocationFromUser(me);
-    await registerPushToken(me);
     setScreen('home');
     setLoading(true);
-    await loadHomeData(
-      typeof me.lat === 'number' && typeof me.lng === 'number' ? { lat: me.lat, lng: me.lng } : null,
-    );
-    await loadTodayMenu();
+
+    const coords = typeof me.lat === 'number' && typeof me.lng === 'number'
+      ? { lat: me.lat, lng: me.lng }
+      : null;
+
+    const results = await Promise.allSettled([
+      registerPushToken(me),
+      maybeShowMarketPricePrompt(me),
+      loadHomeData(coords),
+      loadTodayMenu(),
+    ]);
+
     setLoading(false);
+
+    const failedCriticalLoad = results[2]?.status === 'rejected' && results[3]?.status === 'rejected';
+    if (failedCriticalLoad) {
+      throw new Error('Login succeeded, but the app could not load chef data from the server.');
+    }
   };
 
   const handleLogout = async () => {
@@ -677,6 +758,30 @@ export default function App() {
     setDishOffers([]);
     setScreen('auth');
   };
+
+  const submitDailyMarketPrices = useCallback(async () => {
+    if (!user) return;
+    setMarketPriceBusy(true);
+    try {
+      const entries = Object.entries(marketPriceValues).map(([itemKey, value]) => {
+        const digits = value.replace(/[^0-9.]/g, '');
+        return {
+          itemKey,
+          price: digits ? Number(digits) : null,
+        };
+      });
+      await MarketPrices.submitDaily({
+        city: marketPriceCity.trim() || user.city || user.location || undefined,
+        entries,
+      });
+      await dismissMarketPricePrompt();
+      Alert.alert('Saved', 'Today’s market prices have been noted.');
+    } catch (error) {
+      Alert.alert('Could not save', error instanceof Error ? error.message : 'Please try again.');
+    } finally {
+      setMarketPriceBusy(false);
+    }
+  }, [dismissMarketPricePrompt, marketPriceCity, marketPriceValues, user]);
 
   const goRequestDetail = (id: string) => { setActiveRequestId(id); setScreen('request-detail'); };
   const goOrderDetail   = (id: string) => { setActiveOrderId(id);   setScreen('order-detail'); };
@@ -1004,6 +1109,25 @@ export default function App() {
         />
       ) : null}
 
+      <MarketPricePromptModal
+        visible={showMarketPricePrompt}
+        city={marketPriceCity}
+        onCityChange={setMarketPriceCity}
+        catalog={marketPriceCatalog.length ? marketPriceCatalog : MARKET_PRICE_DEFAULT_ITEMS.map((item) => ({
+          key: item.key,
+          label: item.label,
+          category: item.category.toLowerCase(),
+          unit: 'kg',
+        }))}
+        values={marketPriceValues}
+        busy={marketPriceBusy}
+        onChangeValue={(itemKey, nextValue) => {
+          setMarketPriceValues((current) => ({ ...current, [itemKey]: nextValue.replace(/[^0-9.]/g, '') }));
+        }}
+        onSkip={() => dismissMarketPricePrompt()}
+        onSubmit={submitDailyMarketPrices}
+      />
+
       <Modal visible={showLocationModal} animationType="slide" transparent onRequestClose={() => setShowLocationModal(false)}>
         <TouchableOpacity style={locSt.backdrop} activeOpacity={1} onPress={() => setShowLocationModal(false)} />
         <View style={locSt.sheet}>
@@ -1246,7 +1370,80 @@ function ChefBottomNav({
   );
 }
 
-function AuthScreen({ onSuccess }: { onSuccess: (user: UserProfile) => void }) {
+function MarketPricePromptModal({
+  visible,
+  city,
+  onCityChange,
+  catalog,
+  values,
+  busy,
+  onChangeValue,
+  onSkip,
+  onSubmit,
+}: {
+  visible: boolean;
+  city: string;
+  onCityChange: (value: string) => void;
+  catalog: MarketPriceCatalogItem[];
+  values: Record<string, string>;
+  busy: boolean;
+  onChangeValue: (itemKey: string, value: string) => void;
+  onSkip: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onSkip}>
+      <View style={mpSt.backdrop}>
+        <View style={mpSt.card}>
+          <Text style={mpSt.title}>Today&apos;s market check</Text>
+          <Text style={mpSt.sub}>Optional. Add any raw market prices you know from this morning so buyer budget suggestions stay closer to your city.</Text>
+
+          <Text style={mpSt.label}>City</Text>
+          <TextInput
+            style={mpSt.cityInput}
+            value={city}
+            onChangeText={onCityChange}
+            placeholder="Kolkata"
+            placeholderTextColor="#BDB5AB"
+          />
+
+          <ScrollView style={mpSt.list} contentContainerStyle={mpSt.listContent} showsVerticalScrollIndicator={false}>
+            {catalog.map((item) => (
+              <View key={item.key} style={mpSt.row}>
+                <View style={mpSt.rowCopy}>
+                  <Text style={mpSt.rowTitle}>{item.label}</Text>
+                  <Text style={mpSt.rowMeta}>{item.category} · per {item.unit}</Text>
+                </View>
+                <View style={mpSt.priceBox}>
+                  <Text style={mpSt.currency}>₹</Text>
+                  <TextInput
+                    style={mpSt.priceInput}
+                    value={values[item.key] ?? ''}
+                    onChangeText={(next) => onChangeValue(item.key, next)}
+                    keyboardType="number-pad"
+                    placeholder="Optional"
+                    placeholderTextColor="#BDB5AB"
+                  />
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+
+          <View style={mpSt.actions}>
+            <TouchableOpacity style={mpSt.skipBtn} activeOpacity={0.85} onPress={onSkip} disabled={busy}>
+              <Text style={mpSt.skipText}>Skip today</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[mpSt.saveBtn, busy && { opacity: 0.7 }]} activeOpacity={0.85} onPress={onSubmit} disabled={busy}>
+              {busy ? <ActivityIndicator color={C.white} /> : <Text style={mpSt.saveText}>Save prices</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function AuthScreen({ onSuccess }: { onSuccess: (user: UserProfile) => Promise<void> | void }) {
   const [mode, setMode]         = useState<'login' | 'register'>('login');
   const [name, setName]         = useState('');
   const [phone, setPhone]       = useState('');
@@ -1267,7 +1464,7 @@ function AuthScreen({ onSuccess }: { onSuccess: (user: UserProfile) => void }) {
         ? await Auth.login(phone, password)
         : await Auth.register({ name, phone, password, city });
       await Tokens.set(res.accessToken, res.refreshToken);
-      onSuccess(res.user);
+      await onSuccess(res.user);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Something went wrong');
     } finally {
@@ -4778,6 +4975,38 @@ const cardSt = StyleSheet.create({
   nextActionArrow:{ fontSize: 18, fontWeight: '700' },
   reviewRow:    { flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border },
   reviewText:   { fontSize: 11, color: C.warmGray, flex: 1 },
+});
+
+const mpSt = StyleSheet.create({
+  backdrop: { flex: 1, backgroundColor: 'rgba(15, 12, 9, 0.55)', justifyContent: 'center', padding: 18 },
+  card: { maxHeight: '82%', backgroundColor: C.white, borderRadius: 24, padding: 18 },
+  title: { fontSize: 22, fontWeight: '900', color: C.ink },
+  sub: { fontSize: 13, color: C.warmGray, lineHeight: 19, marginTop: 6, marginBottom: 16 },
+  label: { fontSize: 10, fontWeight: '800', color: C.warmGray, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 },
+  cityInput: {
+    backgroundColor: C.bg, borderRadius: 14, borderWidth: 1, borderColor: C.border,
+    paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: C.ink, marginBottom: 14,
+  },
+  list: { maxHeight: 380 },
+  listContent: { gap: 10 },
+  row: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+    backgroundColor: C.bg, borderRadius: 16, borderWidth: 1, borderColor: C.border, padding: 12,
+  },
+  rowCopy: { flex: 1 },
+  rowTitle: { fontSize: 15, fontWeight: '800', color: C.ink },
+  rowMeta: { fontSize: 11, color: C.warmGray, marginTop: 2, textTransform: 'capitalize' },
+  priceBox: {
+    minWidth: 118, flexDirection: 'row', alignItems: 'center', backgroundColor: C.white,
+    borderRadius: 12, borderWidth: 1, borderColor: C.border, paddingHorizontal: 10,
+  },
+  currency: { fontSize: 18, fontWeight: '800', color: C.ink, marginRight: 6 },
+  priceInput: { flex: 1, fontSize: 15, fontWeight: '700', color: C.ink, paddingVertical: Platform.OS === 'ios' ? 10 : 8 },
+  actions: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  skipBtn: { flex: 1, backgroundColor: C.bg, borderRadius: 14, borderWidth: 1, borderColor: C.border, paddingVertical: 14, alignItems: 'center' },
+  skipText: { fontSize: 14, fontWeight: '700', color: C.warmGray },
+  saveBtn: { flex: 1.2, backgroundColor: C.mint, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  saveText: { fontSize: 14, fontWeight: '800', color: C.white },
 });
 
 const offerSt = StyleSheet.create({

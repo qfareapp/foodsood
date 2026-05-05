@@ -42,7 +42,10 @@ const C = {
   paleYellow: '#FEF9EE',
 } as const;
 
-const LOCAL_API_BASE = 'http://192.168.15.135:3000/api';
+const LOCAL_API_BASE =
+  Platform.OS === 'web'
+    ? 'http://localhost:3000/api'
+    : 'http://192.168.1.42:3000/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 const BUYER_ACCESS_KEY = 'buyer_access_token';
@@ -396,6 +399,29 @@ interface BuyerRequestOrderItem {
     name: string;
     avatar?: string | null;
   };
+}
+
+interface MarketPriceSuggestionApi {
+  city: string;
+  asOfDate: string;
+  summary: Array<{
+    itemKey: string;
+    itemLabel: string;
+    category: string;
+    unit: string;
+    averagePrice: number;
+    submissions: number;
+  }>;
+  suggestion: {
+    matchedItems: Array<{
+      itemKey: string;
+      itemLabel: string;
+      averagePrice: number;
+    }>;
+    suggestedPrice: number;
+    marketCostEstimate: number;
+    confidence: 'light' | 'medium';
+  } | null;
 }
 
 function mapBuyerQuoteCard(request: BuyerRequestApi, quote: BuyerRequestQuoteApi, index: number, quoteCount: number): BuyerQuoteCardItem {
@@ -1002,6 +1028,8 @@ export default function App() {
   const [remarks, setRemarks] = useState('');
   const [delivery, setDelivery] = useState('pickup');
   const [budget, setBudget] = useState(300);
+  const [marketSuggestion, setMarketSuggestion] = useState<MarketPriceSuggestionApi | null>(null);
+  const [marketSuggestionLoading, setMarketSuggestionLoading] = useState(false);
   const [notifEnabled, setNotifEnabled] = useState(true);
   const [quotesBudget, setQuotesBudget] = useState(300);
   const [counterChef, setCounterChef] = useState<BuyerQuoteCardItem | null>(null);
@@ -1392,6 +1420,39 @@ export default function App() {
     .filter((quote) => quote.status === 'PENDING' || quote.status === 'COUNTERED')
     .sort((a, b) => (a.counterOffer ?? a.price) - (b.counterOffer ?? b.price))
     .map((quote, index, arr) => mapBuyerQuoteCard(currentRequest!, quote, index, arr.length));
+
+  useEffect(() => {
+    const city = (buyerProfile?.city || location || '').trim();
+    if (!city || city === 'Set your location') {
+      setMarketSuggestion(null);
+      return;
+    }
+
+    const qtyKg = isThali ? Math.max(0.5, thaliPlates * 0.35) : Math.max(0.1, qtyGrams / 1000);
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      city,
+      category: FOOD_CATEGORIES.find((item) => item.id === selectedFood)?.label ?? 'Custom',
+      dishName: dishName.trim() || 'Custom',
+      qtyKg: String(qtyKg),
+    });
+
+    setMarketSuggestionLoading(true);
+    fetch(`${API_BASE}/market-prices/suggestion?${params.toString()}`, { signal: controller.signal })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error((data as { error?: string }).error ?? 'Failed to load market suggestion');
+        setMarketSuggestion(data as MarketPriceSuggestionApi);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setMarketSuggestion(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setMarketSuggestionLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [buyerProfile?.city, dishName, isThali, location, qtyGrams, selectedFood, thaliPlates]);
 
   const requestNotificationCards: BuyerNotificationCard[] = myRequests
     .filter((request) => !['COMPLETED', 'CANCELLED', 'EXPIRED'].includes(request.status))
@@ -3339,12 +3400,32 @@ export default function App() {
                 </View>
                 <View style={styles.marketPriceCard}>
                   <Text style={styles.marketPriceLabel}>Today&apos;s market price</Text>
-                  <Text style={styles.marketPriceValue}>
-                    {selectedFood === '1' ? 'Chicken: Rs 300-Rs 350 per kg' : 'Live market price coming soon'}
-                  </Text>
-                  <Text style={styles.marketPriceSub}>
-                    Static for now. Later this can be connected to live market pricing.
-                  </Text>
+                  {marketSuggestionLoading ? (
+                    <Text style={styles.marketPriceSub}>Checking fresh city prices from chefs near you…</Text>
+                  ) : marketSuggestion?.suggestion ? (
+                    <>
+                      <Text style={styles.marketPriceValue}>
+                        Suggested budget: ₹{marketSuggestion.suggestion.suggestedPrice}
+                      </Text>
+                      <Text style={styles.marketPriceSub}>
+                        Based on {marketSuggestion.suggestion.matchedItems.map((item) => item.itemLabel).join(', ')} prices in {marketSuggestion.city}. Raw cost estimate ₹{marketSuggestion.suggestion.marketCostEstimate}.
+                      </Text>
+                      <Text style={styles.marketPriceHint}>
+                        Buyer hint from chef-submitted market rates. You can still keep your own budget.
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.marketPriceAction}
+                        activeOpacity={0.82}
+                        onPress={() => setBudget(marketSuggestion.suggestion?.suggestedPrice ?? budget)}
+                      >
+                        <Text style={styles.marketPriceActionText}>Use suggested budget</Text>
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <Text style={styles.marketPriceSub}>
+                      No chef market-price data yet for this city today. Your budget remains fully manual.
+                    </Text>
+                  )}
                 </View>
               </View>
             </View>
@@ -6409,6 +6490,9 @@ const styles = StyleSheet.create({
   marketPriceLabel: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, color: C.warmGray },
   marketPriceValue: { fontSize: 14, fontWeight: '800', color: C.ink, marginTop: 4 },
   marketPriceSub: { fontSize: 11, color: C.warmGray, lineHeight: 16, marginTop: 4 },
+  marketPriceHint: { fontSize: 11, color: C.mint, fontWeight: '700', marginTop: 8 },
+  marketPriceAction: { alignSelf: 'flex-start', marginTop: 10, backgroundColor: C.paleGreen, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#B9E2CD' },
+  marketPriceActionText: { fontSize: 12, fontWeight: '800', color: C.mint },
   budgetAmount: { fontSize: 40, fontWeight: '800', color: C.ink, marginBottom: 12 },
   budgetControls: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, justifyContent: 'center', marginBottom: 10 },
   budgetChip: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.white },

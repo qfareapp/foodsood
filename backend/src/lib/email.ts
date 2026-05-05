@@ -11,7 +11,8 @@ const transporter = nodemailer.createTransport({
 });
 
 export async function sendOtpEmail(to: string, otp: string): Promise<void> {
-  const from = `"${process.env.BREVO_FROM_NAME ?? 'FoodSood'}" <${process.env.BREVO_SMTP_LOGIN}>`;
+  const fromEmail = process.env.BREVO_FROM_EMAIL || process.env.BREVO_SMTP_LOGIN;
+  const from = `"${process.env.BREVO_FROM_NAME ?? 'FoodSood'}" <${fromEmail}>`;
   await transporter.sendMail({
     from,
     to,

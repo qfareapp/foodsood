@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { expireStaleRequests } from '../lib/requestExpiry';
 import { AuthRequest, requireAuth } from '../middleware/auth';
 
 const router = Router();
@@ -9,6 +10,15 @@ const HOLD_MINUTES = 10;
 const MAX_CHEF_QUOTES = 2;
 const MAX_BUYER_QUOTES = 2;
 const MAX_BUYER_COUNTERS = MAX_BUYER_QUOTES - 1;
+
+router.use(async (_req, _res, next) => {
+  try {
+    await expireStaleRequests();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;

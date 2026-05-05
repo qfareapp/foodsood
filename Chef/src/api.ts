@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 
 /**
  * Change to your machine's LAN IP when running on a physical device.
@@ -6,7 +7,10 @@ import * as SecureStore from 'expo-secure-store';
  * iOS simulator     → http://localhost:3000/api
  * Physical device   → http://<your-lan-ip>:3000/api
  */
-const LOCAL_API_BASE = 'http://192.168.15.135:3000/api';
+const LOCAL_API_BASE =
+  Platform.OS === 'web'
+    ? 'http://localhost:3000/api'
+    : 'http://192.168.1.42:3000/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 export const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 
@@ -53,14 +57,27 @@ async function refreshChefAccessToken(): Promise<string | null> {
 }
 
 async function apiRequest(path: string, options: RequestInit = {}, token?: string | null): Promise<Response> {
-  return fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers ?? {}),
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    return await fetch(`${API_BASE}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers ?? {}),
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (message === 'Aborted' || message.includes('aborted')) {
+      throw new Error(`Request timed out while connecting to ${API_BASE}`);
+    }
+    throw new Error(`Could not reach ${API_BASE}. Check that the backend is running and your device can access this IP.`);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ── Core fetch wrapper ────────────────────────────────────────────────────
@@ -195,6 +212,16 @@ export const Users = {
     api<{ success: true }>('/users/me/fcm-token', { method: 'POST', body: JSON.stringify({ token }) }),
   deleteFcmToken: (token: string) =>
     api<{ success: true }>('/users/me/fcm-token', { method: 'DELETE', body: JSON.stringify({ token }) }),
+};
+
+export const MarketPrices = {
+  catalog: () => api<MarketPriceCatalogItem[]>('/market-prices/catalog'),
+  mineToday: () => api<ChefDailyMarketPriceResponse>('/market-prices/mine/today'),
+  submitDaily: (body: { city?: string; entries: Array<{ itemKey: string; price?: number | null }> }) =>
+    api<{ success: true; city: string; submittedCount: number; submittedForDate: string }>('/market-prices/daily', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // ── Offers ────────────────────────────────────────────────────────────────
@@ -373,6 +400,22 @@ export interface CreateCookingDishPayload {
   readyInMinutes: number;
   notes?: string;
   imageUrl?: string | null;
+}
+
+export interface MarketPriceCatalogItem {
+  key: string;
+  label: string;
+  category: string;
+  unit: string;
+}
+
+export interface ChefDailyMarketPriceResponse {
+  city: string;
+  submittedForDate: string;
+  entries: Array<{
+    itemKey: string;
+    price: number;
+  }>;
 }
 
 export interface QuotePayload {
