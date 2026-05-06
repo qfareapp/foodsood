@@ -50,6 +50,7 @@ const LOCAL_API_BASE =
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 const PRIVACY_POLICY_URL = `${API_BASE.replace(/\/api$/, '')}/privacy-policy`;
+const ACCOUNT_DELETION_URL = `${API_BASE.replace(/\/api$/, '')}/account-deletion`;
 const BUYER_ACCESS_KEY = 'buyer_access_token';
 const BUYER_REFRESH_KEY = 'buyer_refresh_token';
 const MAX_LOCATION_IMAGE_BYTES = 30 * 1024;
@@ -1899,6 +1900,19 @@ export default function App() {
     await BuyerTokens.clear();
     setBuyerProfile(null);
     setScreen('auth');
+  };
+
+  const requestBuyerAccountDeletion = async () => {
+    try {
+      await buyerApi<{ success: true; status: string }>('/users/me/delete-request', {
+        method: 'POST',
+        body: JSON.stringify({ note: 'Requested from buyer app profile' }),
+      });
+      await handleBuyerLogout();
+      Alert.alert('Deletion requested', 'Your account deletion request was submitted and your account has been deactivated.');
+    } catch (error) {
+      Alert.alert('Request failed', error instanceof Error ? error.message : 'Could not submit account deletion request.');
+    }
   };
 
   const submitBuyerAuth = async () => {
@@ -4320,6 +4334,25 @@ export default function App() {
               onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => Alert.alert('Link unavailable', 'Could not open the privacy policy page.'))}
             >
               <Text style={styles.signOutText}>Privacy Policy & Data Safety</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.signOutBtn}
+              activeOpacity={0.75}
+              onPress={() => Linking.openURL(ACCOUNT_DELETION_URL).catch(() => Alert.alert('Link unavailable', 'Could not open the account deletion page.'))}
+            >
+              <Text style={styles.signOutText}>Account Deletion Help</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.signOutBtn, { borderColor: '#E7B8B1', backgroundColor: '#FFF4F2' }]}
+              activeOpacity={0.75}
+              onPress={() =>
+                Alert.alert('Delete Account', 'This will submit an account deletion request and sign you out. Continue?', [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Request Deletion', style: 'destructive', onPress: requestBuyerAccountDeletion },
+                ])
+              }
+            >
+              <Text style={[styles.signOutText, { color: '#A33E32' }]}>Request Account Deletion</Text>
             </TouchableOpacity>
           </ScrollView>
 

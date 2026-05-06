@@ -45,6 +45,9 @@ app.use(express.static(legalDir));
 app.get('/privacy-policy', (_req, res) => {
   res.sendFile(path.join(legalDir, 'privacy-policy.html'));
 });
+app.get('/account-deletion', (_req, res) => {
+  res.sendFile(path.join(legalDir, 'account-deletion.html'));
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

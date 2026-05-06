@@ -204,6 +204,11 @@ export const Users = {
   me: () => api<UserProfile>('/users/me'),
   updateMe: (data: Partial<UserProfile> & { location?: string | null; lat?: number | null; lng?: number | null }) =>
     api<UserProfile>('/users/me', { method: 'PUT', body: JSON.stringify(data) }),
+  requestDeletion: (note?: string) =>
+    api<{ success: true; status: string }>('/users/me/delete-request', {
+      method: 'POST',
+      body: JSON.stringify(note ? { note } : {}),
+    }),
   uploadKitchenImage: (imageData: string) =>
     api<{ url: string }>('/users/me/kitchen-image', { method: 'POST', body: JSON.stringify({ imageData }) }),
   saveAddress: (data: { label: string; address: string; lat?: number; lng?: number }) =>

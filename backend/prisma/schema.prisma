@@ -50,6 +50,7 @@ model User {
   reportsFiled    ContentReport[] @relation("ReportsFiled")
   blocksInitiated UserBlock[]     @relation("BlocksInitiated")
   blocksReceived  UserBlock[]     @relation("BlocksReceived")
+  deletionRequests AccountDeletionRequest[]
 }
 
 // ─── REQUEST ─────────────────────────────────────────────────────────────────
@@ -295,6 +296,27 @@ model UserBlock {
   @@unique([blockerId, blockedUserId])
   @@index([blockerId])
   @@index([blockedUserId])
+}
+
+model AccountDeletionRequest {
+  id           String   @id @default(cuid()) @map("_id")
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+  fullName     String?
+  contactEmail String?
+  contactPhone String?
+  note         String?
+  source       String   @default("APP")
+  status       String   @default("PENDING")
+  requestedAt  DateTime @default(now())
+  processedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId])
+  @@index([contactEmail])
+  @@index([contactPhone])
+  @@index([status])
 }
 
 model MarketPriceEntry {

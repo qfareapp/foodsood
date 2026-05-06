@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FoodSood Account Deletion</title>
+    <style>
+      :root {
+        --bg: #f7f1e8;
+        --panel: #fffdf9;
+        --ink: #201a15;
+        --muted: #6d6156;
+        --line: #e8d9c7;
+        --accent: #c95e21;
+        --danger: #a93c2f;
+        --danger-soft: #fff1ef;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        background: linear-gradient(180deg, #fcf7f0 0%, var(--bg) 100%);
+        color: var(--ink);
+      }
+      .wrap { max-width: 900px; margin: 0 auto; padding: 42px 18px 60px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 30px;
+        box-shadow: 0 18px 40px rgba(42, 29, 16, 0.08);
+        margin-bottom: 18px;
+      }
+      .eyebrow {
+        margin: 0 0 10px;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+      h1, h2 { margin: 0 0 14px; line-height: 1.12; }
+      h1 { font-size: clamp(2.1rem, 4vw, 3.4rem); }
+      p, li, label { line-height: 1.65; }
+      .muted { color: var(--muted); }
+      .danger {
+        background: var(--danger-soft);
+        border-left: 4px solid var(--danger);
+        border-radius: 14px;
+        padding: 14px 16px;
+        margin-top: 16px;
+      }
+      ul { margin: 10px 0 0 20px; }
+      form { display: grid; gap: 14px; margin-top: 18px; }
+      input, textarea {
+        width: 100%;
+        padding: 14px 16px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        font: inherit;
+        background: #fff;
+        color: var(--ink);
+      }
+      textarea { min-height: 120px; resize: vertical; }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 14px 18px;
+        font: inherit;
+        font-weight: 700;
+        background: var(--danger);
+        color: #fff;
+        cursor: pointer;
+      }
+      .status {
+        margin-top: 12px;
+        font-size: 0.96rem;
+      }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="card">
+        <p class="eyebrow">FoodSood and NeighbourBites Chef</p>
+        <h1>Account Deletion Request</h1>
+        <p class="muted">
+          This page is the public account-deletion path for both the buyer app and the chef app. You can also start the
+          same request from inside the app profile section.
+        </p>
+        <div class="danger">
+          Submitting this request may deactivate your account before full deletion processing is completed. Limited records
+          may be retained where required for fraud prevention, payment disputes, safety review, or legal compliance.
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>How deletion works</h2>
+        <ul>
+          <li>In-app authenticated requests can immediately deactivate the account.</li>
+          <li>Public web requests are reviewed using the contact details you provide below.</li>
+          <li>Associated personal data is deleted or anonymized unless limited retention is required for security, legal, or dispute reasons.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Submit a public deletion request</h2>
+        <p class="muted">Use the email address or phone number associated with your account so we can verify ownership.</p>
+        <form id="deletion-form">
+          <input id="full-name" type="text" placeholder="Full name" maxlength="80" />
+          <input id="contact-email" type="email" placeholder="Account email" maxlength="120" />
+          <input id="contact-phone" type="text" placeholder="Account phone number" maxlength="15" />
+          <textarea id="note" placeholder="Optional note or reason" maxlength="500"></textarea>
+          <button type="submit">Submit Deletion Request</button>
+        </form>
+        <p id="status" class="status muted"></p>
+        <p class="muted">Need help instead? Contact <a href="mailto:support@foodsood.com">support@foodsood.com</a>.</p>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById('deletion-form');
+      const statusEl = document.getElementById('status');
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        statusEl.textContent = 'Submitting...';
+        try {
+          const res = await fetch('/api/users/account-deletion-request', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fullName: document.getElementById('full-name').value.trim(),
+              email: document.getElementById('contact-email').value.trim(),
+              phone: document.getElementById('contact-phone').value.trim(),
+              note: document.getElementById('note').value.trim(),
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Request failed');
+          form.reset();
+          statusEl.textContent = 'Deletion request submitted. Our team will follow up if verification is required.';
+        } catch (error) {
+          statusEl.textContent = error instanceof Error ? error.message : 'Could not submit deletion request.';
+        }
+      });
+    </script>
+  </body>
+</html>

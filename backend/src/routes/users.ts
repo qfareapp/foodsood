@@ -71,6 +71,20 @@ const addressSchema = z.object({
   lng: z.number().optional(),
 });
 
+const publicDeletionRequestSchema = z.object({
+  fullName: z.string().trim().max(80).optional(),
+  email: z.string().trim().email().max(120).optional(),
+  phone: z.string().trim().min(10).max(15).optional(),
+  note: z.string().trim().max(500).optional(),
+}).refine((data) => Boolean(data.email || data.phone), {
+  message: 'Email or phone is required',
+  path: ['email'],
+});
+
+const appDeletionRequestSchema = z.object({
+  note: z.string().trim().max(500).optional(),
+});
+
 const dishSuggestionsQuerySchema = z.object({
   q: z.string().trim().max(120).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
@@ -114,6 +128,75 @@ router.get('/me', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // ── POST /api/users/me/kitchen-image ────────────────────────────────────────
+router.post('/account-deletion-request', async (req, res) => {
+  const parsed = publicDeletionRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  await prisma.accountDeletionRequest.create({
+    data: {
+      fullName: parsed.data.fullName || null,
+      contactEmail: parsed.data.email || null,
+      contactPhone: parsed.data.phone || null,
+      note: parsed.data.note || null,
+      source: 'PUBLIC_WEB',
+      status: 'PENDING',
+    },
+  });
+
+  res.status(201).json({ success: true });
+});
+
+router.post('/me/delete-request', requireAuth, async (req: AuthRequest, res) => {
+  const parsed = appDeletionRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const currentUser = await prisma.user.findUnique({
+    where: { id: req.user!.userId },
+    select: { id: true, name: true, email: true, phone: true },
+  });
+  if (!currentUser) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  const existing = await prisma.accountDeletionRequest.findFirst({
+    where: {
+      userId: currentUser.id,
+      status: { in: ['PENDING', 'IN_REVIEW'] },
+    },
+    select: { id: true },
+  });
+
+  if (!existing) {
+    await prisma.accountDeletionRequest.create({
+      data: {
+        userId: currentUser.id,
+        fullName: currentUser.name,
+        contactEmail: currentUser.email || null,
+        contactPhone: currentUser.phone,
+        note: parsed.data.note || null,
+        source: 'APP',
+        status: 'PENDING',
+      },
+    });
+  }
+
+  await prisma.user.update({
+    where: { id: currentUser.id },
+    data: { isActive: false },
+  });
+  await prisma.refreshToken.deleteMany({ where: { userId: currentUser.id } });
+  await prisma.fcmToken.deleteMany({ where: { userId: currentUser.id } });
+
+  res.json({ success: true, status: existing ? 'already_requested' : 'requested' });
+});
+
 router.post('/me/kitchen-image', requireAuth, async (req: AuthRequest, res) => {
   const { imageData } = req.body as { imageData?: string };
   if (!imageData || !imageData.startsWith('data:')) {

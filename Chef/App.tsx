@@ -2830,6 +2830,17 @@ function ProfileScreen({
     finally { setSaving(false); }
   };
 
+  const requestChefAccountDeletion = async () => {
+    try {
+      await Users.requestDeletion('Requested from chef app profile');
+      Alert.alert('Deletion requested', 'Your account deletion request was submitted and your account has been deactivated.', [
+        { text: 'OK', onPress: () => onLogout() },
+      ]);
+    } catch (error) {
+      Alert.alert('Request failed', error instanceof Error ? error.message : 'Could not submit account deletion request.');
+    }
+  };
+
   return (
     <>
       <View style={ss.header}>
@@ -3015,6 +3026,31 @@ function ProfileScreen({
           }
         >
           <Text style={profSt.logoutText}>Privacy Policy & Data Safety</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={profSt.logoutBtn}
+          activeOpacity={0.75}
+          onPress={() =>
+            Linking.openURL(`${API_BASE.replace(/\/api$/, '')}/account-deletion`).catch(() =>
+              Alert.alert('Link unavailable', 'Could not open the account deletion page.'),
+            )
+          }
+        >
+          <Text style={profSt.logoutText}>Account Deletion Help</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[profSt.logoutBtn, { borderColor: '#E7B8B1', backgroundColor: '#FFF4F2' }]}
+          activeOpacity={0.75}
+          onPress={() =>
+            Alert.alert('Delete Account', 'This will submit an account deletion request and sign you out. Continue?', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Request Deletion', style: 'destructive', onPress: requestChefAccountDeletion },
+            ])
+          }
+        >
+          <Text style={[profSt.logoutText, { color: '#A33E32' }]}>Request Account Deletion</Text>
         </TouchableOpacity>
 
         {/* Logout */}
