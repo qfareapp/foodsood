@@ -1061,6 +1061,7 @@ export default function App() {
   const [marketSuggestion, setMarketSuggestion] = useState<MarketPriceSuggestionApi | null>(null);
   const [marketSuggestionLoading, setMarketSuggestionLoading] = useState(false);
   const [notifEnabled, setNotifEnabled] = useState(true);
+  const [buyerHelpExpanded, setBuyerHelpExpanded] = useState(false);
   const [quotesBudget, setQuotesBudget] = useState(300);
   const [counterChef, setCounterChef] = useState<BuyerQuoteCardItem | null>(null);
   const [floatedDish, setFloatedDish] = useState<FloatedDish | null>(null);
@@ -4325,34 +4326,51 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
+            <View style={styles.helpCard}>
+              <TouchableOpacity
+                style={styles.helpHeader}
+                activeOpacity={0.82}
+                onPress={() => setBuyerHelpExpanded((curr) => !curr)}
+              >
+                <View>
+                  <Text style={styles.helpTitle}>Help & Support</Text>
+                  <Text style={styles.helpSub}>Privacy, deletion, and account support</Text>
+                </View>
+                <Text style={styles.helpChevron}>{buyerHelpExpanded ? '−' : '+'}</Text>
+              </TouchableOpacity>
+              {buyerHelpExpanded ? (
+                <View style={styles.helpBody}>
+                  <TouchableOpacity
+                    style={styles.helpActionBtn}
+                    activeOpacity={0.75}
+                    onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => Alert.alert('Link unavailable', 'Could not open the privacy policy page.'))}
+                  >
+                    <Text style={styles.signOutText}>Privacy Policy & Data Safety</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.helpActionBtn}
+                    activeOpacity={0.75}
+                    onPress={() => Linking.openURL(ACCOUNT_DELETION_URL).catch(() => Alert.alert('Link unavailable', 'Could not open the account deletion page.'))}
+                  >
+                    <Text style={styles.signOutText}>Account Deletion Help</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.helpActionBtn, styles.helpDangerBtn]}
+                    activeOpacity={0.75}
+                    onPress={() =>
+                      Alert.alert('Delete Account', 'This will submit an account deletion request and sign you out. Continue?', [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Request Deletion', style: 'destructive', onPress: requestBuyerAccountDeletion },
+                      ])
+                    }
+                  >
+                    <Text style={[styles.signOutText, { color: '#A33E32' }]}>Request Account Deletion</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
             <TouchableOpacity style={styles.signOutBtn} activeOpacity={0.75} onPress={handleBuyerLogout}>
               <Text style={styles.signOutText}>Sign Out</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.signOutBtn}
-              activeOpacity={0.75}
-              onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => Alert.alert('Link unavailable', 'Could not open the privacy policy page.'))}
-            >
-              <Text style={styles.signOutText}>Privacy Policy & Data Safety</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.signOutBtn}
-              activeOpacity={0.75}
-              onPress={() => Linking.openURL(ACCOUNT_DELETION_URL).catch(() => Alert.alert('Link unavailable', 'Could not open the account deletion page.'))}
-            >
-              <Text style={styles.signOutText}>Account Deletion Help</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.signOutBtn, { borderColor: '#E7B8B1', backgroundColor: '#FFF4F2' }]}
-              activeOpacity={0.75}
-              onPress={() =>
-                Alert.alert('Delete Account', 'This will submit an account deletion request and sign you out. Continue?', [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Request Deletion', style: 'destructive', onPress: requestBuyerAccountDeletion },
-                ])
-              }
-            >
-              <Text style={[styles.signOutText, { color: '#A33E32' }]}>Request Account Deletion</Text>
             </TouchableOpacity>
           </ScrollView>
 
@@ -6749,6 +6767,14 @@ const styles = StyleSheet.create({
   chefBannerSub: { fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 4 },
   chefBannerBtn: { backgroundColor: C.turmeric, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10 },
   chefBannerBtnText: { color: C.white, fontSize: 12, fontWeight: '700' },
+  helpCard: { marginHorizontal: 18, marginTop: 20, borderRadius: 18, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.white, overflow: 'hidden' },
+  helpHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 16 },
+  helpTitle: { fontSize: 15, fontWeight: '800', color: C.ink },
+  helpSub: { marginTop: 3, fontSize: 12, color: C.warmGray },
+  helpChevron: { fontSize: 24, lineHeight: 24, fontWeight: '500', color: C.spice, paddingHorizontal: 4 },
+  helpBody: { paddingHorizontal: 14, paddingBottom: 14, gap: 10 },
+  helpActionBtn: { paddingVertical: 13, borderRadius: 12, borderWidth: 1.5, borderColor: C.border, alignItems: 'center', backgroundColor: '#FCFAF6' },
+  helpDangerBtn: { borderColor: '#E7B8B1', backgroundColor: '#FFF4F2' },
   signOutBtn: { margin: 18, paddingVertical: 13, borderRadius: 12, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' },
   signOutText: { fontSize: 14, fontWeight: '600', color: C.warmGray },
   newBadge: { backgroundColor: C.blush, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },

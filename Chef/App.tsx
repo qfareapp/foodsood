@@ -2686,6 +2686,7 @@ function ProfileScreen({
   onLogout: () => void;
   onSaved: (u: UserProfile) => void;
 }) {
+  const [helpExpanded, setHelpExpanded] = useState(false);
   const [name, setName]               = useState(user?.name ?? '');
   const [bio, setBio]                 = useState(user?.bio ?? '');
   const [style, setStyle]             = useState(user?.cookingStyle ?? '');
@@ -3016,42 +3017,57 @@ function ProfileScreen({
 
         <Text style={profSt.phone}>📱 {user?.phone}</Text>
 
-        <TouchableOpacity
-          style={profSt.logoutBtn}
-          activeOpacity={0.75}
-          onPress={() =>
-            Linking.openURL(`${API_BASE.replace(/\/api$/, '')}/privacy-policy`).catch(() =>
-              Alert.alert('Link unavailable', 'Could not open the privacy policy page.'),
-            )
-          }
-        >
-          <Text style={profSt.logoutText}>Privacy Policy & Data Safety</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={profSt.logoutBtn}
-          activeOpacity={0.75}
-          onPress={() =>
-            Linking.openURL(`${API_BASE.replace(/\/api$/, '')}/account-deletion`).catch(() =>
-              Alert.alert('Link unavailable', 'Could not open the account deletion page.'),
-            )
-          }
-        >
-          <Text style={profSt.logoutText}>Account Deletion Help</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[profSt.logoutBtn, { borderColor: '#E7B8B1', backgroundColor: '#FFF4F2' }]}
-          activeOpacity={0.75}
-          onPress={() =>
-            Alert.alert('Delete Account', 'This will submit an account deletion request and sign you out. Continue?', [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Request Deletion', style: 'destructive', onPress: requestChefAccountDeletion },
-            ])
-          }
-        >
-          <Text style={[profSt.logoutText, { color: '#A33E32' }]}>Request Account Deletion</Text>
-        </TouchableOpacity>
+        <View style={profSt.helpCard}>
+          <TouchableOpacity
+            style={profSt.helpHeader}
+            activeOpacity={0.82}
+            onPress={() => setHelpExpanded((curr) => !curr)}
+          >
+            <View>
+              <Text style={profSt.helpTitle}>Help & Support</Text>
+              <Text style={profSt.helpSub}>Privacy, deletion, and account support</Text>
+            </View>
+            <Text style={profSt.helpChevron}>{helpExpanded ? '−' : '+'}</Text>
+          </TouchableOpacity>
+          {helpExpanded ? (
+            <View style={profSt.helpBody}>
+              <TouchableOpacity
+                style={profSt.helpActionBtn}
+                activeOpacity={0.75}
+                onPress={() =>
+                  Linking.openURL(`${API_BASE.replace(/\/api$/, '')}/privacy-policy`).catch(() =>
+                    Alert.alert('Link unavailable', 'Could not open the privacy policy page.'),
+                  )
+                }
+              >
+                <Text style={profSt.logoutText}>Privacy Policy & Data Safety</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={profSt.helpActionBtn}
+                activeOpacity={0.75}
+                onPress={() =>
+                  Linking.openURL(`${API_BASE.replace(/\/api$/, '')}/account-deletion`).catch(() =>
+                    Alert.alert('Link unavailable', 'Could not open the account deletion page.'),
+                  )
+                }
+              >
+                <Text style={profSt.logoutText}>Account Deletion Help</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[profSt.helpActionBtn, profSt.helpDangerBtn]}
+                activeOpacity={0.75}
+                onPress={() =>
+                  Alert.alert('Delete Account', 'This will submit an account deletion request and sign you out. Continue?', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Request Deletion', style: 'destructive', onPress: requestChefAccountDeletion },
+                  ])
+                }
+              >
+                <Text style={[profSt.logoutText, { color: '#A33E32' }]}>Request Account Deletion</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </View>
 
         {/* Logout */}
         <TouchableOpacity
@@ -4563,6 +4579,14 @@ const profSt = StyleSheet.create({
   field:        { marginBottom: 2 },
   input:        { backgroundColor: C.cream, borderWidth: 1.5, borderColor: C.border, borderRadius: 12, paddingHorizontal: 14, paddingVertical: Platform.OS === 'ios' ? 12 : 10, fontSize: 14, color: C.ink },
   phone:        { fontSize: 13, color: C.warmGray, textAlign: 'center', marginTop: 20, marginBottom: 6 },
+  helpCard:     { marginTop: 16, borderRadius: 18, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.white, overflow: 'hidden' },
+  helpHeader:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 16 },
+  helpTitle:    { fontSize: 15, fontWeight: '800', color: C.ink },
+  helpSub:      { marginTop: 3, fontSize: 12, color: C.warmGray },
+  helpChevron:  { fontSize: 24, lineHeight: 24, fontWeight: '500', color: C.mintDark, paddingHorizontal: 4 },
+  helpBody:     { paddingHorizontal: 14, paddingBottom: 14, gap: 10 },
+  helpActionBtn:{ paddingVertical: 13, borderRadius: 12, borderWidth: 1.5, borderColor: C.border, alignItems: 'center', backgroundColor: '#FCFAF6' },
+  helpDangerBtn:{ borderColor: '#E7B8B1', backgroundColor: '#FFF4F2' },
   logoutBtn:    { marginTop: 10, paddingVertical: 13, borderRadius: 12, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' },
   logoutText:   { fontSize: 14, fontWeight: '600', color: C.warmGray },
 
