@@ -1,8 +1,14 @@
 {
-  "rewrites": [
+  "redirects": [
     {
       "source": "/privacy-policy",
-      "destination": "/privacy-policy.html"
+      "destination": "https://foodsood.onrender.com/privacy-policy",
+      "permanent": false
+    },
+    {
+      "source": "/privacy-policy.html",
+      "destination": "https://foodsood.onrender.com/privacy-policy",
+      "permanent": false
     }
   ]
 }
