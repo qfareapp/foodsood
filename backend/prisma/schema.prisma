@@ -28,6 +28,7 @@ model User {
   ratingCount  Int      @default(0)
   totalOrders  Int      @default(0)
   isActive         Boolean  @default(true)
+  ugcPolicyAcceptedAt DateTime?
   kitchenImages    String?
   specialityDishes String?
   createdAt      DateTime @default(now())
@@ -46,6 +47,9 @@ model User {
   fcmTokens       FcmToken[]
   refreshTokens   RefreshToken[]
   marketPrices    MarketPriceEntry[]
+  reportsFiled    ContentReport[] @relation("ReportsFiled")
+  blocksInitiated UserBlock[]     @relation("BlocksInitiated")
+  blocksReceived  UserBlock[]     @relation("BlocksReceived")
 }
 
 // ─── REQUEST ─────────────────────────────────────────────────────────────────
@@ -165,6 +169,7 @@ model Review {
   chef       User     @relation("ReviewsReceived", fields: [chefId], references: [id])
   rating     Int
   comment    String?
+  isHidden   Boolean  @default(false)
   createdAt  DateTime @default(now())
 }
 
@@ -255,6 +260,41 @@ model RefreshToken {
   token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
+}
+
+model ContentReport {
+  id              String   @id @default(cuid()) @map("_id")
+  reporterId      String
+  reporter        User     @relation("ReportsFiled", fields: [reporterId], references: [id])
+  targetType      String
+  targetId        String
+  targetUserId    String?
+  reason          String
+  details         String?
+  status          String   @default("OPEN")
+  resolutionNotes String?
+  resolvedAt      DateTime?
+  resolvedBy      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([reporterId])
+  @@index([targetType, targetId])
+  @@index([targetUserId])
+  @@index([status])
+}
+
+model UserBlock {
+  id            String   @id @default(cuid()) @map("_id")
+  blockerId     String
+  blocker       User     @relation("BlocksInitiated", fields: [blockerId], references: [id])
+  blockedUserId String
+  blockedUser   User     @relation("BlocksReceived", fields: [blockedUserId], references: [id])
+  createdAt     DateTime @default(now())
+
+  @@unique([blockerId, blockedUserId])
+  @@index([blockerId])
+  @@index([blockedUserId])
 }
 
 model MarketPriceEntry {

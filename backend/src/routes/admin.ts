@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import * as jwt from 'jsonwebtoken';
+import { REPORT_STATUSES } from '../lib/moderation';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 
@@ -92,6 +93,7 @@ router.get('/dashboard', requireAdmin, async (_req, res) => {
     liveDishes,
     offers,
     activeOffers,
+    openReports,
   ] = await Promise.all([
     prisma.user.count(),
     prisma.request.count(),
@@ -103,6 +105,7 @@ router.get('/dashboard', requireAdmin, async (_req, res) => {
     prisma.chefDish.count(),
     prisma.dishOffer.count(),
     prisma.dishOffer.count({ where: { status: { in: ['PENDING', 'COUNTERED', 'HOLD', 'PAID'] } } }),
+    prisma.contentReport.count({ where: { status: { in: ['OPEN', 'REVIEWING'] } } }),
   ]);
 
   const recentUsers = await prisma.user.findMany({
@@ -137,6 +140,7 @@ router.get('/dashboard', requireAdmin, async (_req, res) => {
       liveDishes,
       offers,
       activeOffers,
+      openReports,
     },
     recentUsers,
     recentOrders: recentOrders.map((order) => ({
@@ -162,6 +166,85 @@ router.get('/dashboard', requireAdmin, async (_req, res) => {
       updatedAt: request.updatedAt,
     })),
   });
+});
+
+router.get('/reports', requireAdmin, async (req, res) => {
+  const parsed = z.object({
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    status: z.enum(REPORT_STATUSES).optional(),
+    q: z.string().trim().max(120).optional(),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const where: Record<string, unknown> = {};
+  if (parsed.data.status) where.status = parsed.data.status;
+  if (parsed.data.q) {
+    where.OR = [
+      { reason: { contains: parsed.data.q, mode: 'insensitive' } },
+      { details: { contains: parsed.data.q, mode: 'insensitive' } },
+      { targetType: { contains: parsed.data.q, mode: 'insensitive' } },
+    ];
+  }
+
+  const reports = await prisma.contentReport.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: parsed.data.limit ?? 100,
+    include: {
+      reporter: { select: { id: true, name: true, role: true } },
+    },
+  });
+
+  res.json(reports);
+});
+
+router.patch('/reports/:id', requireAdmin, async (req, res) => {
+  const parsed = z.object({
+    status: z.enum(REPORT_STATUSES).optional(),
+    resolutionNotes: z.string().trim().max(500).optional(),
+    hideReview: z.boolean().optional(),
+    deactivateTargetUser: z.boolean().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  const reportId = String(req.params.id);
+  const report = await prisma.contentReport.findUnique({ where: { id: reportId } });
+  if (!report) {
+    res.status(404).json({ error: 'Report not found' });
+    return;
+  }
+
+  if (parsed.data.hideReview && report.targetType === 'REVIEW') {
+    await prisma.review.update({
+      where: { id: report.targetId },
+      data: { isHidden: true },
+    }).catch(() => undefined);
+  }
+
+  if (parsed.data.deactivateTargetUser && report.targetUserId) {
+    await prisma.user.update({
+      where: { id: report.targetUserId },
+      data: { isActive: false },
+    }).catch(() => undefined);
+  }
+
+  const updated = await prisma.contentReport.update({
+    where: { id: reportId },
+    data: {
+      ...(parsed.data.status ? { status: parsed.data.status } : {}),
+      ...(parsed.data.resolutionNotes !== undefined ? { resolutionNotes: parsed.data.resolutionNotes || null } : {}),
+      ...(parsed.data.status === 'RESOLVED' || parsed.data.status === 'REJECTED'
+        ? { resolvedAt: new Date(), resolvedBy: ADMIN_USERNAME }
+        : {}),
+    },
+  });
+
+  res.json(updated);
 });
 
 router.get('/users', requireAdmin, async (req, res) => {

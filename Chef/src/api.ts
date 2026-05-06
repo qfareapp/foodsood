@@ -10,7 +10,7 @@ import { Platform } from 'react-native';
 const LOCAL_API_BASE =
   Platform.OS === 'web'
     ? 'http://localhost:3000/api'
-    : 'http://192.168.1.42:3000/api';
+    : 'http://192.168.16.22:3000/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 export const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 
@@ -246,6 +246,24 @@ export const Offers = {
     }),
 };
 
+export const Moderation = {
+  acceptPolicy: () =>
+    api<{ success: true }>('/moderation/accept-ugc-policy', { method: 'POST' }),
+  report: (body: {
+    targetType: 'USER' | 'REVIEW' | 'PROFILE' | 'KITCHEN_IMAGE';
+    targetId: string;
+    reason: ModerationReason;
+    details?: string;
+  }) =>
+    api('/moderation/reports', { method: 'POST', body: JSON.stringify(body) }),
+  blockUser: (userId: string) =>
+    api<{ success: true }>(`/moderation/block/${userId}`, { method: 'POST' }),
+  unblockUser: (userId: string) =>
+    api<{ success: true }>(`/moderation/block/${userId}`, { method: 'DELETE' }),
+  relation: (userId: string) =>
+    api<{ blocked: boolean; blockedByMe: boolean }>(`/moderation/relation/${userId}`),
+};
+
 // ── Types ─────────────────────────────────────────────────────────────────
 export interface AuthResponse {
   user: UserProfile;
@@ -271,9 +289,12 @@ export interface UserProfile {
   ratingCount: number;
   totalOrders: number;
   isActive: boolean;
+  ugcPolicyAcceptedAt?: string | null;
   kitchenImages?: string[];
   specialityDishes?: SpecialityDish[];
 }
+
+export type ModerationReason = 'HARASSMENT' | 'HATE' | 'SEXUAL' | 'SPAM' | 'IMPERSONATION' | 'SCAM' | 'VIOLENCE' | 'OTHER';
 
 export interface UserAddress {
   id: string;

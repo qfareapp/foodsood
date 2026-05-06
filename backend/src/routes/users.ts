@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { AuthRequest, requireAuth } from '../middleware/auth';
+import { getBlockedUserIds } from '../lib/moderation';
+import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth';
 import prisma from '../lib/prisma';
 import { uploadBase64Image } from '../lib/cloudinary';
 
@@ -79,6 +80,16 @@ function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function hasUgcProfileChange(data: z.infer<typeof updateMeSchema>): boolean {
+  return Boolean(
+    data.bio !== undefined
+    || data.avatar !== undefined
+    || data.coverImage !== undefined
+    || data.kitchenImages !== undefined
+    || data.specialityDishes !== undefined,
+  );
+}
+
 // ── GET /api/users/me ───────────────────────────────────────────────────────
 router.get('/me', requireAuth, async (req: AuthRequest, res) => {
   const user = await prisma.user.findUnique({
@@ -88,7 +99,7 @@ router.get('/me', requireAuth, async (req: AuthRequest, res) => {
       avatar: true, coverImage: true, bio: true, cookingStyle: true, location: true,
       city: true, lat: true, lng: true,
       rating: true, ratingCount: true, totalOrders: true,
-      isActive: true, kitchenImages: true, specialityDishes: true, createdAt: true, updatedAt: true,
+      isActive: true, ugcPolicyAcceptedAt: true, kitchenImages: true, specialityDishes: true, createdAt: true, updatedAt: true,
     },
   });
   if (!user) {
@@ -124,6 +135,16 @@ router.put('/me', requireAuth, async (req: AuthRequest, res) => {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
+  if (hasUgcProfileChange(parsed.data)) {
+    const currentUser = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: { ugcPolicyAcceptedAt: true },
+    });
+    if (!currentUser?.ugcPolicyAcceptedAt) {
+      res.status(403).json({ error: 'Accept the community policy before updating profile content' });
+      return;
+    }
+  }
 
   if (parsed.data.email) {
     const conflict = await prisma.user.findFirst({
@@ -149,7 +170,7 @@ router.put('/me', requireAuth, async (req: AuthRequest, res) => {
       avatar: true, coverImage: true, bio: true, cookingStyle: true, location: true,
       city: true, lat: true, lng: true,
       rating: true, ratingCount: true, totalOrders: true,
-      isActive: true, kitchenImages: true, specialityDishes: true, createdAt: true, updatedAt: true,
+      isActive: true, ugcPolicyAcceptedAt: true, kitchenImages: true, specialityDishes: true, createdAt: true, updatedAt: true,
     },
   });
   res.json({
@@ -208,15 +229,36 @@ router.get('/dish-suggestions', async (req, res) => {
 });
 
 // ── GET /api/users/:id  (public chef profile) ───────────────────────────────
-router.get('/:id', async (req, res) => {
+router.get('/:id', optionalAuth, async (req: AuthRequest, res) => {
+  const profileUserId = firstParam(req.params.id);
+  if (!profileUserId) {
+    res.status(400).json({ error: 'User id required' });
+    return;
+  }
+  if (req.user?.userId) {
+    const blocked = await prisma.userBlock.findFirst({
+      where: {
+        OR: [
+          { blockerId: req.user.userId, blockedUserId: profileUserId },
+          { blockerId: profileUserId, blockedUserId: req.user.userId },
+        ],
+      },
+      select: { id: true },
+    });
+    if (blocked) {
+      res.status(403).json({ error: 'This profile is unavailable.' });
+      return;
+    }
+  }
   const user = await prisma.user.findUnique({
-    where: { id: req.params.id },
+    where: { id: profileUserId },
     select: {
       ...PUBLIC_CHEF_SELECT,
       kitchenImages: true,
       reviewsReceived: {
         take: 5,
         orderBy: { createdAt: 'desc' },
+        where: { isHidden: false },
         select: {
           id: true, rating: true, comment: true, createdAt: true,
           reviewer: { select: { id: true, name: true, avatar: true } },
@@ -228,10 +270,13 @@ router.get('/:id', async (req, res) => {
     res.status(404).json({ error: 'User not found' });
     return;
   }
+  const blockedReviewerIds = req.user?.userId ? new Set(await getBlockedUserIds(req.user.userId)) : new Set<string>();
+  const reviewsReceived = user.reviewsReceived.filter((review) => !blockedReviewerIds.has(review.reviewer.id));
   res.json({
     ...user,
     kitchenImages: user.kitchenImages ? JSON.parse(user.kitchenImages) as string[] : [],
     specialityDishes: user.specialityDishes ? JSON.parse(user.specialityDishes) : [],
+    reviewsReceived,
   });
 });
 
@@ -272,8 +317,9 @@ router.delete('/me/addresses/:id', requireAuth, async (req: AuthRequest, res) =>
 
 // ── GET /api/users/me/saved-chefs ───────────────────────────────────────────
 router.get('/me/saved-chefs', requireAuth, async (req: AuthRequest, res) => {
+  const blockedIds = await getBlockedUserIds(req.user!.userId);
   const saved = await prisma.savedChef.findMany({
-    where: { savedById: req.user!.userId },
+    where: { savedById: req.user!.userId, chefId: { notIn: blockedIds } },
     include: { chef: { select: PUBLIC_CHEF_SELECT } },
     orderBy: { id: 'desc' },
   });
@@ -286,6 +332,19 @@ router.post('/me/saved-chefs/:chefId', requireAuth, async (req: AuthRequest, res
   if (!chefId) return res.status(400).json({ error: 'Chef id required' });
   if (chefId === req.user!.userId) {
     res.status(400).json({ error: 'Cannot save yourself' });
+    return;
+  }
+  const blocked = await prisma.userBlock.findFirst({
+    where: {
+      OR: [
+        { blockerId: req.user!.userId, blockedUserId: chefId },
+        { blockerId: chefId, blockedUserId: req.user!.userId },
+      ],
+    },
+    select: { id: true },
+  });
+  if (blocked) {
+    res.status(403).json({ error: 'This chef is unavailable because one side has blocked the other.' });
     return;
   }
   const chef = await prisma.user.findUnique({ where: { id: chefId }, select: { id: true, role: true } });

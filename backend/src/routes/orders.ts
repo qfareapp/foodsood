@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { assertNotBlocked } from '../lib/moderation';
 import { AuthRequest, requireAuth } from '../middleware/auth';
 
 const router = Router();
@@ -263,6 +264,12 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
     res.status(403).json({ error: 'Only the buyer can pay for this order' });
     return;
   }
+  try {
+    await assertNotBlocked(order.buyerId, order.chefId);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Blocked interaction' });
+    return;
+  }
   if (order.paymentStatus !== 'HOLD') {
     res.status(409).json({ error: 'Order is not awaiting payment' });
     return;
@@ -340,6 +347,12 @@ router.post('/:id/pay-balance', requireAuth, async (req: AuthRequest, res) => {
     res.status(409).json({ error: 'Balance payment only applies to advance-paid orders' });
     return;
   }
+  try {
+    await assertNotBlocked(order.buyerId, order.chefId);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Blocked interaction' });
+    return;
+  }
 
   const balancePaymentRef = `DEMO-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
   await prisma.order.update({
@@ -393,6 +406,21 @@ router.post('/:id/review', requireAuth, async (req: AuthRequest, res) => {
     res.status(409).json({ error: 'Review already submitted for this order' });
     return;
   }
+  try {
+    await assertNotBlocked(order.buyerId, order.chefId);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Blocked interaction' });
+    return;
+  }
+
+  const reviewer = await prisma.user.findUnique({
+    where: { id: req.user!.userId },
+    select: { ugcPolicyAcceptedAt: true },
+  });
+  if (!reviewer?.ugcPolicyAcceptedAt) {
+    res.status(403).json({ error: 'Accept the community policy before posting a review' });
+    return;
+  }
 
   const schema = z.object({
     rating: z.number().int().min(1).max(5),
@@ -411,6 +439,7 @@ router.post('/:id/review', requireAuth, async (req: AuthRequest, res) => {
       chefId: order.chefId,
       rating: parsed.data.rating,
       comment: parsed.data.comment,
+      isHidden: false,
     },
   });
 

@@ -40,6 +40,7 @@
             <button class="nav-link" data-tab="orders">Orders</button>
             <button class="nav-link" data-tab="offers">Direct Offers</button>
             <button class="nav-link" data-tab="dishes">Today Board</button>
+            <button class="nav-link" data-tab="reports">Reports</button>
           </nav>
           <button id="logout-btn" class="ghost-btn">Logout</button>
         </aside>
@@ -187,6 +188,26 @@
                 <h3>Chef Today Board Listings</h3>
               </div>
               <div id="dishes-table" class="table-wrap"></div>
+            </section>
+          </section>
+
+          <section id="tab-reports" class="tab-panel hidden">
+            <div class="toolbar">
+              <input id="reports-search" class="toolbar-input" placeholder="Search reason, target, notes" />
+              <select id="reports-status" class="toolbar-select">
+                <option value="">All statuses</option>
+                <option value="OPEN">OPEN</option>
+                <option value="REVIEWING">REVIEWING</option>
+                <option value="RESOLVED">RESOLVED</option>
+                <option value="REJECTED">REJECTED</option>
+              </select>
+              <button id="reports-load" class="ghost-btn">Apply</button>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>User Reports</h3>
+              </div>
+              <div id="reports-table" class="table-wrap"></div>
             </section>
           </section>
         </main>

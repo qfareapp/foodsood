@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { haversineKm } from '../lib/geo';
+import { getBlockedUserIds } from '../lib/moderation';
 import { uploadBase64Image } from '../lib/cloudinary';
 import prisma from '../lib/prisma';
-import { AuthRequest, requireAuth } from '../middleware/auth';
+import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth';
 
 const router = Router();
 
@@ -73,7 +74,7 @@ function serializeDish(
   };
 }
 
-router.get('/', async (req, res) => {
+router.get('/', optionalAuth, async (req: AuthRequest, res) => {
   const { lat, lng, radiusKm = '5', limit = '30' } = req.query as Record<string, string>;
   const viewerLat = lat ? parseFloat(lat) : null;
   const viewerLng = lng ? parseFloat(lng) : null;
@@ -120,8 +121,10 @@ router.get('/', async (req, res) => {
 
   const viewerCoords = viewerLat != null && viewerLng != null ? { lat: viewerLat, lng: viewerLng } : null;
 
+  const blockedIds = req.user?.userId ? await getBlockedUserIds(req.user.userId) : [];
   const results = dishes
     .filter((dish) => dish.chef.isActive && (dish.chef.role === 'CHEF' || dish.chef.role === 'BOTH'))
+    .filter((dish) => !blockedIds.includes(dish.chef.id))
     .map((dish) => serializeDish(dish, viewerCoords, bookedByDish[dish.id] ?? 0))
     .filter((dish) => dish.plates > 0)
     .filter((dish) => {

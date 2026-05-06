@@ -45,7 +45,7 @@ const C = {
 const LOCAL_API_BASE =
   Platform.OS === 'web'
     ? 'http://localhost:3000/api'
-    : 'http://192.168.1.42:3000/api';
+    : 'http://192.168.16.22:3000/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 const BUYER_ACCESS_KEY = 'buyer_access_token';
@@ -313,6 +313,7 @@ interface BuyerProfile {
   lat?: number | null;
   lng?: number | null;
   createdAt?: string;
+  ugcPolicyAcceptedAt?: string | null;
 }
 
 interface BuyerAddress {
@@ -514,6 +515,30 @@ async function buyerApi<T>(path: string, options: RequestInit = {}): Promise<T> 
     throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
   }
   return data as T;
+}
+
+async function submitModerationReport(input: {
+  targetType: 'USER' | 'REVIEW' | 'PROFILE' | 'KITCHEN_IMAGE';
+  targetId: string;
+  reason: ModerationReason;
+  details?: string;
+}) {
+  return buyerApi('/moderation/reports', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+async function blockModerationUser(userId: string) {
+  return buyerApi(`/moderation/block/${userId}`, { method: 'POST' });
+}
+
+async function unblockModerationUser(userId: string) {
+  return buyerApi(`/moderation/block/${userId}`, { method: 'DELETE' });
+}
+
+async function getModerationRelation(userId: string): Promise<{ blocked: boolean; blockedByMe: boolean }> {
+  return buyerApi(`/moderation/relation/${userId}`);
 }
 
 
@@ -840,6 +865,8 @@ type PublicChefProfileApi = {
     reviewer: { id: string; name: string; avatar?: string | null };
   }>;
 };
+
+type ModerationReason = 'HARASSMENT' | 'HATE' | 'SEXUAL' | 'SPAM' | 'IMPERSONATION' | 'SCAM' | 'VIOLENCE' | 'OTHER';
 
 type CookingFeedApiItem = {
   id: string;
@@ -2179,7 +2206,7 @@ export default function App() {
       emoji: offer.dishEmoji,
       emojiBg: C.blush,
       name: offer.dishName,
-      chef: offer.chefName ?? 'Chef',
+      chef: 'Chef',
       date: new Date(offer.updatedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
       price: `Rs ${(offer.agreedPrice ?? offer.offerPrice) * offer.plates}`,
       status: 'Delivered',
@@ -4602,6 +4629,7 @@ function PublicChefProfileScreen({
   const [profile, setProfile] = useState<PublicChefProfileApi | null>(null);
   const [liveDishes, setLiveDishes] = useState<CookingFeedCard[]>([]);
   const [loading, setLoading] = useState(true);
+  const [blockedByMe, setBlockedByMe] = useState(false);
   const startRef = useRef(Date.now());
   const [tick, setTick] = useState(0);
 
@@ -4646,19 +4674,20 @@ function PublicChefProfileScreen({
         return;
       }
       try {
-        const [profileRes, dishesRes] = await Promise.all([
-          fetch(`${API_BASE}/users/${chef.id}`),
-          fetch(`${API_BASE}/cooking?limit=50`),
+        const [nextProfile, dishFeed, relation] = await Promise.all([
+          buyerApi<PublicChefProfileApi>(`/users/${chef.id}`),
+          buyerApi<CookingFeedApiItem[]>('/cooking?limit=50'),
+          getModerationRelation(chef.id).catch(() => ({ blocked: false, blockedByMe: false })),
         ]);
-        const nextProfile = profileRes.ok ? await profileRes.json() as PublicChefProfileApi : null;
-        const dishFeed = dishesRes.ok ? await dishesRes.json() as CookingFeedApiItem[] : [];
         if (!active) return;
         setProfile(nextProfile);
+        setBlockedByMe(relation.blockedByMe);
         setLiveDishes(dishFeed.map(mapCookingFeedItem).filter((item) => item.chefId === chef.id));
       } catch {
         if (!active) return;
         setProfile(null);
         setLiveDishes([]);
+        setBlockedByMe(false);
       } finally {
         if (active) setLoading(false);
       }
@@ -4688,6 +4717,73 @@ function PublicChefProfileScreen({
   const extraReadyDishes = readyDishes.slice(1);
   const styleTags = Array.from(new Set([profile?.cookingStyle, ...liveDishes.flatMap((item) => item.tags.slice(0, 2))].filter(Boolean))) as string[];
   const reviewItems = profile?.reviewsReceived ?? [];
+
+  const reportChef = (reason: ModerationReason) => {
+    submitModerationReport({
+      targetType: 'PROFILE',
+      targetId: chef.id,
+      reason,
+    })
+      .then(() => Alert.alert('Reported', 'The report was sent to the moderation queue.'))
+      .catch((error: unknown) => Alert.alert('Report failed', error instanceof Error ? error.message : 'Could not send report.'));
+  };
+
+  const openChefReportMenu = () => {
+    Alert.alert('Report chef', 'Choose a reason for reporting this chef profile.', [
+      { text: 'Harassment', onPress: () => reportChef('HARASSMENT') },
+      { text: 'Spam', onPress: () => reportChef('SPAM') },
+      { text: 'Impersonation', onPress: () => reportChef('IMPERSONATION') },
+      { text: 'Sexual content', onPress: () => reportChef('SEXUAL') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const toggleChefBlock = () => {
+    const action = blockedByMe ? unblockModerationUser : blockModerationUser;
+    Alert.alert(
+      blockedByMe ? 'Unblock chef' : 'Block chef',
+      blockedByMe
+        ? 'This chef will be visible again in your app.'
+        : 'You will stop seeing this chef profile in your signed-in feed and saved list.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: blockedByMe ? 'Unblock' : 'Block',
+          style: blockedByMe ? 'default' : 'destructive',
+          onPress: () => {
+            action(chef.id)
+              .then(() => {
+                setBlockedByMe((prev) => !prev);
+                Alert.alert(blockedByMe ? 'Chef unblocked' : 'Chef blocked');
+              })
+              .catch((error: unknown) => Alert.alert('Action failed', error instanceof Error ? error.message : 'Could not update block status.'));
+          },
+        },
+      ],
+    );
+  };
+
+  const reportReview = (reviewId: string) => {
+    Alert.alert('Report review', 'Choose a reason for this review.', [
+      {
+        text: 'Harassment',
+        onPress: () => {
+          submitModerationReport({ targetType: 'REVIEW', targetId: reviewId, reason: 'HARASSMENT' })
+            .then(() => Alert.alert('Reported', 'The review was sent to moderation.'))
+            .catch((error: unknown) => Alert.alert('Report failed', error instanceof Error ? error.message : 'Could not send report.'));
+        },
+      },
+      {
+        text: 'Spam',
+        onPress: () => {
+          submitModerationReport({ targetType: 'REVIEW', targetId: reviewId, reason: 'SPAM' })
+            .then(() => Alert.alert('Reported', 'The review was sent to moderation.'))
+            .catch((error: unknown) => Alert.alert('Report failed', error instanceof Error ? error.message : 'Could not send report.'));
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
 
 
   return (
@@ -4820,6 +4916,14 @@ function PublicChefProfileScreen({
             </View>
             {profile?.bio ? <Text style={pubSt.bioText}>{profile.bio}</Text> : null}
             {loading ? <Text style={pubSt.bioText}>Loading chef profile...</Text> : null}
+            <View style={pubSt.modRow}>
+              <TouchableOpacity style={pubSt.modBtn} activeOpacity={0.8} onPress={openChefReportMenu}>
+                <Text style={pubSt.modBtnText}>Report Chef</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[pubSt.modBtn, blockedByMe && pubSt.modBtnActive]} activeOpacity={0.8} onPress={toggleChefBlock}>
+                <Text style={pubSt.modBtnText}>{blockedByMe ? 'Unblock Chef' : 'Block Chef'}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -5007,7 +5111,7 @@ function PublicChefProfileScreen({
         {/* Reviews */}
         <View style={pubSt.section}>
           <Text style={pubSt.sectionTitle}>Reviews</Text>
-          {(reviewItems.length > 0 ? reviewItems.map((review, index) => ({ id: review.id, initial: review.buyerName?.[0]?.toUpperCase() ?? String(index + 1), buyer: review.buyerName, date: new Date(review.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), rating: review.rating, comment: review.comment })) : MOCK_REVIEWS).map((r) => (
+          {(reviewItems.length > 0 ? reviewItems.map((review, index) => ({ id: review.id, initial: review.reviewer.name?.[0]?.toUpperCase() ?? String(index + 1), buyer: review.reviewer.name, date: new Date(review.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), rating: review.rating, comment: review.comment })) : MOCK_REVIEWS).map((r) => (
             <View key={r.id} style={pubSt.reviewCard}>
               <View style={pubSt.reviewTop}>
                 <View style={pubSt.reviewAv}>
@@ -5020,6 +5124,11 @@ function PublicChefProfileScreen({
                 <Text style={pubSt.reviewStars}>{'★'.repeat(r.rating)}</Text>
               </View>
               <Text style={pubSt.reviewComment}>{r.comment}</Text>
+              {reviewItems.some((review) => review.id === r.id) ? (
+                <TouchableOpacity style={pubSt.reviewReportBtn} activeOpacity={0.75} onPress={() => reportReview(r.id)}>
+                  <Text style={pubSt.reviewReportText}>Report Review</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           ))}
         </View>
@@ -5097,6 +5206,20 @@ const pubSt = StyleSheet.create({
     borderColor: '#F5C8D4',
   },
   saveChefEmoji: { fontSize: 20 },
+  modRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  modBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: C.border,
+    backgroundColor: C.white,
+  },
+  modBtnActive: {
+    backgroundColor: '#FFF0F0',
+    borderColor: '#F3C7C7',
+  },
+  modBtnText: { fontSize: 12, fontWeight: '700', color: C.ink },
   hero: { backgroundColor: C.cream, borderBottomWidth: 1, borderBottomColor: C.border, overflow: 'hidden' },
   heroCover: { height: 164, backgroundColor: '#F5E8DB' },
   heroCoverImage: { width: '100%', height: '100%' },
@@ -5233,6 +5356,8 @@ const pubSt = StyleSheet.create({
   reviewDate: { fontSize: 11, color: C.warmGray, marginTop: 1 },
   reviewStars: { fontSize: 13, color: C.turmeric },
   reviewComment: { fontSize: 13, color: C.ink, lineHeight: 20 },
+  reviewReportBtn: { marginTop: 10, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: '#FFF5F1' },
+  reviewReportText: { fontSize: 11, fontWeight: '700', color: C.spice },
   cta: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 28, backgroundColor: C.white, borderTopWidth: 1, borderTopColor: C.border },
   ctaBtn: { backgroundColor: C.spice, borderRadius: 18, paddingVertical: 17, alignItems: 'center', shadowColor: C.spice, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.28, shadowRadius: 12, elevation: 4 },
   ctaBtnText: { color: C.white, fontSize: 16, fontWeight: '800', letterSpacing: 0.2 },
@@ -6950,6 +7075,7 @@ const feedSt = StyleSheet.create({
   cookCtaText: { color: C.white, fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
   cookCtaSent: { backgroundColor: C.paleGreen, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, alignItems: 'center' },
   cookCtaSentText: { color: C.mint, fontSize: 12, fontWeight: '800' },
+  steamDot: { position: 'absolute', width: 8, height: 8, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.8)' },
   geoBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#DFF3EA', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 14 },
   geoBannerLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 10 },
   geoBannerIcon: { fontSize: 15, marginRight: 8 },

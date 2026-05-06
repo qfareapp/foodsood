@@ -32,6 +32,7 @@ const els = {
   ordersTable: document.getElementById('orders-table'),
   offersTable: document.getElementById('offers-table'),
   dishesTable: document.getElementById('dishes-table'),
+  reportsTable: document.getElementById('reports-table'),
 };
 
 function setError(message = '') {
@@ -106,6 +107,7 @@ function renderMetrics(metrics) {
     ['Today Board Dishes', metrics.liveDishes],
     ['Direct Offers', metrics.offers],
     ['Active Offers', metrics.activeOffers],
+    ['Open Reports', metrics.openReports],
   ];
   els.metricsGrid.innerHTML = items.map(([label, value]) => `
     <article class="metric-card">
@@ -421,6 +423,38 @@ async function loadDishes() {
   );
 }
 
+async function loadReports() {
+  const q = document.getElementById('reports-search').value.trim();
+  const status = document.getElementById('reports-status').value;
+  const params = new URLSearchParams({ limit: '100' });
+  if (q) params.set('q', q);
+  if (status) params.set('status', status);
+  const data = await adminFetch(`/reports?${params.toString()}`);
+  renderTable(
+    els.reportsTable,
+    ['When', 'Reporter', 'Target', 'Reason', 'Status', 'Details', 'Actions'],
+    data.map((item) => `
+      <tr>
+        <td>${escapeHtml(fmtDate(item.createdAt))}</td>
+        <td>${escapeHtml(item.reporter?.name || 'Unknown')}<div class="muted">${escapeHtml(item.reporter?.role || '—')}</div></td>
+        <td>${escapeHtml(item.targetType)}<div class="muted">${escapeHtml(item.targetId)}</div></td>
+        <td>${escapeHtml(item.reason)}</td>
+        <td><span class="pill ${pillClass(item.status)}">${escapeHtml(item.status)}</span></td>
+        <td>${escapeHtml(item.details || item.resolutionNotes || '—')}</td>
+        <td>
+          <div class="table-actions">
+            <button class="mini-btn" data-action="report-status" data-id="${item.id}" data-status="REVIEWING">Reviewing</button>
+            <button class="mini-btn ok" data-action="report-status" data-id="${item.id}" data-status="RESOLVED">Resolve</button>
+            ${item.targetType === 'REVIEW' ? `<button class="mini-btn warn" data-action="hide-review" data-id="${item.id}">Hide Review</button>` : ''}
+            ${item.targetUserId ? `<button class="mini-btn warn" data-action="deactivate-user" data-id="${item.id}">Disable User</button>` : ''}
+          </div>
+        </td>
+      </tr>
+    `),
+    1260,
+  );
+}
+
 async function loadActiveTab() {
   setError('');
   try {
@@ -431,6 +465,7 @@ async function loadActiveTab() {
     if (state.activeTab === 'orders') await loadOrders();
     if (state.activeTab === 'offers') await loadOffers();
     if (state.activeTab === 'dishes') await loadDishes();
+    if (state.activeTab === 'reports') await loadReports();
   } catch (error) {
     setError(error.message || 'Failed to load admin data.');
   }
@@ -492,6 +527,7 @@ document.getElementById('requests-load').addEventListener('click', loadRequests)
 document.getElementById('orders-load').addEventListener('click', loadOrders);
 document.getElementById('offers-load').addEventListener('click', loadOffers);
 document.getElementById('dishes-load').addEventListener('click', loadDishes);
+document.getElementById('reports-load').addEventListener('click', loadReports);
 
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
@@ -517,6 +553,30 @@ document.addEventListener('click', async (event) => {
         body: JSON.stringify({ role: nextRole.toUpperCase() }),
       });
       await loadUsers();
+      await loadOverview();
+    }
+    if (action === 'report-status') {
+      await adminFetch(`/reports/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: button.dataset.status }),
+      });
+      await loadReports();
+      await loadOverview();
+    }
+    if (action === 'hide-review') {
+      await adminFetch(`/reports/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'RESOLVED', hideReview: true, resolutionNotes: 'Review hidden by admin' }),
+      });
+      await loadReports();
+      await loadOverview();
+    }
+    if (action === 'deactivate-user') {
+      await adminFetch(`/reports/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'RESOLVED', deactivateTargetUser: true, resolutionNotes: 'User disabled by admin' }),
+      });
+      await loadReports();
       await loadOverview();
     }
   } catch (error) {

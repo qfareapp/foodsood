@@ -29,6 +29,7 @@ import {
   Auth,
   Cooking,
   MarketPrices,
+  Moderation,
   Offers,
   Orders,
   Quotes,
@@ -39,6 +40,7 @@ import {
   type CreateCookingDishPayload,
   type DishOffer,
   type MarketPriceCatalogItem,
+  type ModerationReason,
   type OrderItem,
   type OrderStatus,
   type QuoteItem,
@@ -675,7 +677,9 @@ export default function App() {
       });
 
     if (!same) {
-      Users.updateMe({ specialityDishes: nextSpecialities })
+      Moderation.acceptPolicy()
+        .catch(() => undefined)
+        .then(() => Users.updateMe({ specialityDishes: nextSpecialities }))
         .then((updatedUser) => setUser(updatedUser))
         .catch(() => undefined);
     }
@@ -2366,12 +2370,15 @@ function OrderDetailScreen({
   const [loading, setLoading]     = useState(true);
   const [updating, setUpdating]   = useState(false);
   const [error, setError]         = useState('');
+  const [blockedByMe, setBlockedByMe] = useState(false);
   const [, setTick]               = useState(0);
 
   const load = useCallback(async () => {
     try {
       const data = await Orders.get(orderId);
       setOrder(data);
+      const relation = await Moderation.relation(data.buyer.id).catch(() => ({ blocked: false, blockedByMe: false }));
+      setBlockedByMe(relation.blockedByMe);
     } catch { setError('Failed to load order'); }
     finally { setLoading(false); }
   }, [orderId]);
@@ -2393,6 +2400,49 @@ function OrderDetailScreen({
     } finally {
       setUpdating(false);
     }
+  };
+
+  const sendBuyerReport = (reason: ModerationReason) => {
+    if (!order) return;
+    Moderation.report({ targetType: 'USER', targetId: order.buyer.id, reason })
+      .then(() => Alert.alert('Reported', 'The buyer was sent to the moderation queue.'))
+      .catch((e: unknown) => Alert.alert('Report failed', e instanceof Error ? e.message : 'Could not send report.'));
+  };
+
+  const openBuyerReportMenu = () => {
+    Alert.alert('Report buyer', 'Choose a reason for this report.', [
+      { text: 'Harassment', onPress: () => sendBuyerReport('HARASSMENT') },
+      { text: 'Spam', onPress: () => sendBuyerReport('SPAM') },
+      { text: 'Impersonation', onPress: () => sendBuyerReport('IMPERSONATION') },
+      { text: 'Other', onPress: () => sendBuyerReport('OTHER') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const toggleBuyerBlock = () => {
+    if (!order) return;
+    const action = blockedByMe ? Moderation.unblockUser : Moderation.blockUser;
+    Alert.alert(
+      blockedByMe ? 'Unblock buyer' : 'Block buyer',
+      blockedByMe
+        ? 'This buyer will be visible again.'
+        : 'Blocking will stop this buyer from interacting with you where the app enforces user blocks.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: blockedByMe ? 'Unblock' : 'Block',
+          style: blockedByMe ? 'default' : 'destructive',
+          onPress: () => {
+            action(order.buyer.id)
+              .then(() => {
+                setBlockedByMe((prev) => !prev);
+                Alert.alert(blockedByMe ? 'Buyer unblocked' : 'Buyer blocked');
+              })
+              .catch((e: unknown) => Alert.alert('Action failed', e instanceof Error ? e.message : 'Could not update block status.'));
+          },
+        },
+      ],
+    );
   };
 
   if (loading) return <CenteredLoader />;
@@ -2463,6 +2513,14 @@ function OrderDetailScreen({
           </View>
           <View style={{ flex: 1 }}>
             <Text style={odSt.buyerName}>{order.buyer.name}</Text>
+            <View style={odSt.buyerActionRow}>
+              <TouchableOpacity style={odSt.buyerActionBtn} activeOpacity={0.8} onPress={openBuyerReportMenu}>
+                <Text style={odSt.buyerActionText}>Report Buyer</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[odSt.buyerActionBtn, blockedByMe && odSt.buyerActionBtnActive]} activeOpacity={0.8} onPress={toggleBuyerBlock}>
+                <Text style={odSt.buyerActionText}>{blockedByMe ? 'Unblock Buyer' : 'Block Buyer'}</Text>
+              </TouchableOpacity>
+            </View>
             <Text style={odSt.buyerPhone}>📞 {order.buyer.phone}</Text>
           </View>
           <TouchableOpacity style={odSt.callBtn} activeOpacity={0.8}>
@@ -2658,6 +2716,7 @@ function ProfileScreen({
       const compressed = await compressToTargetKB(uri, kind === 'avatar' ? 10 : 30);
       const imageData = `data:image/jpeg;base64,${compressed.base64}`;
       const { url } = await Users.uploadKitchenImage(imageData);
+      await Moderation.acceptPolicy().catch(() => undefined);
       if (kind === 'avatar') {
         setAvatarUrl(url);
         const updated = await Users.updateMe({ avatar: url });
@@ -2731,6 +2790,7 @@ function ProfileScreen({
       newImages[idx] = url;
       setKitchenImages(newImages);
       // Auto-persist immediately — buyer app reflects it without needing a manual Save
+      await Moderation.acceptPolicy().catch(() => undefined);
       const updated = await Users.updateMe({ kitchenImages: newImages });
       if (updated.kitchenImages?.length) onSaved(updated);
     } catch {
@@ -2744,6 +2804,7 @@ function ProfileScreen({
     const newImages = kitchenImages.filter((_, i) => i !== idx);
     setKitchenImages(newImages);
     try {
+      await Moderation.acceptPolicy().catch(() => undefined);
       const updated = await Users.updateMe({ kitchenImages: newImages });
       if (updated) onSaved(updated);
     } catch { /* non-critical */ }
@@ -2752,6 +2813,7 @@ function ProfileScreen({
   const save = async () => {
     setSaving(true);
     try {
+      await Moderation.acceptPolicy().catch(() => undefined);
       const updated = await Users.updateMe({ name, bio, cookingStyle: style, city, avatar: avatarUrl || undefined, coverImage: coverImageUrl || undefined, kitchenImages });
       // Preserve local kitchenImages if server response omits them (stale backend)
       onSaved({
@@ -4364,6 +4426,10 @@ const odSt = StyleSheet.create({
   buyerAvText:  { fontSize: 17, fontWeight: '700', color: C.spice },
   buyerName:    { fontSize: 14, fontWeight: '700', color: C.ink },
   buyerPhone:   { fontSize: 11, color: C.warmGray, marginTop: 2 },
+  buyerActionRow:{ flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' },
+  buyerActionBtn:{ paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: C.border, backgroundColor: C.white },
+  buyerActionBtnActive: { backgroundColor: '#FFF0F0', borderColor: '#F3C7C7' },
+  buyerActionText:{ fontSize: 11, fontWeight: '700', color: C.ink },
   callBtn:      { backgroundColor: C.mintLight, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 8 },
   callBtnText:  { fontSize: 12, fontWeight: '700', color: C.mint },
   timelineCard: { backgroundColor: C.white, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: C.border, marginBottom: 12 },
