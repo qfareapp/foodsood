@@ -1,14 +1,21 @@
 {
-  "redirects": [
+  "version": 2,
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "builds": [
     {
-      "source": "/privacy-policy",
-      "destination": "https://foodsood.onrender.com/privacy-policy",
-      "permanent": false
+      "src": "privacy-policy.html",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/privacy-policy",
+      "dest": "/privacy-policy.html"
     },
     {
-      "source": "/privacy-policy.html",
-      "destination": "https://foodsood.onrender.com/privacy-policy",
-      "permanent": false
+      "src": "/privacy-policy.html",
+      "dest": "/privacy-policy.html"
     }
   ]
 }
