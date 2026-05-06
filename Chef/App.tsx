@@ -12,6 +12,7 @@ import {
   Animated,
   Dimensions,
   Image,
+  Linking,
   Modal,
   Platform,
   RefreshControl,
@@ -26,6 +27,7 @@ import {
 import Slider from '@react-native-community/slider';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
+  API_BASE,
   Auth,
   Cooking,
   MarketPrices,
@@ -3002,6 +3004,18 @@ function ProfileScreen({
         </View>
 
         <Text style={profSt.phone}>📱 {user?.phone}</Text>
+
+        <TouchableOpacity
+          style={profSt.logoutBtn}
+          activeOpacity={0.75}
+          onPress={() =>
+            Linking.openURL(`${API_BASE.replace(/\/api$/, '')}/privacy-policy`).catch(() =>
+              Alert.alert('Link unavailable', 'Could not open the privacy policy page.'),
+            )
+          }
+        >
+          <Text style={profSt.logoutText}>Privacy Policy & Data Safety</Text>
+        </TouchableOpacity>
 
         {/* Logout */}
         <TouchableOpacity

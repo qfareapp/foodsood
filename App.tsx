@@ -12,6 +12,7 @@ import {
   Dimensions,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   RefreshControl,
@@ -48,6 +49,7 @@ const LOCAL_API_BASE =
     : 'http://192.168.16.22:3000/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
+const PRIVACY_POLICY_URL = `${API_BASE.replace(/\/api$/, '')}/privacy-policy`;
 const BUYER_ACCESS_KEY = 'buyer_access_token';
 const BUYER_REFRESH_KEY = 'buyer_refresh_token';
 const MAX_LOCATION_IMAGE_BYTES = 30 * 1024;
@@ -4311,6 +4313,13 @@ export default function App() {
 
             <TouchableOpacity style={styles.signOutBtn} activeOpacity={0.75} onPress={handleBuyerLogout}>
               <Text style={styles.signOutText}>Sign Out</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.signOutBtn}
+              activeOpacity={0.75}
+              onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => Alert.alert('Link unavailable', 'Could not open the privacy policy page.'))}
+            >
+              <Text style={styles.signOutText}>Privacy Policy & Data Safety</Text>
             </TouchableOpacity>
           </ScrollView>
 

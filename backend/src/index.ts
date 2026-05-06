@@ -36,9 +36,14 @@ app.use('/api/offers', offerRoutes);
 app.use('/api/admin', adminRoutes);
 
 const adminDir = path.join(__dirname, '../../admin');
+const legalDir = path.join(__dirname, '../../legal');
 app.use('/admin', express.static(adminDir));
 app.get('/admin', (_req, res) => {
   res.sendFile(path.join(adminDir, 'index.html'));
+});
+app.use(express.static(legalDir));
+app.get('/privacy-policy', (_req, res) => {
+  res.sendFile(path.join(legalDir, 'privacy-policy.html'));
 });
 
 app.get('/api/health', (_req, res) => {
