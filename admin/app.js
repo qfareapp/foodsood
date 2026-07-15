@@ -33,6 +33,7 @@ const els = {
   offersTable: document.getElementById('offers-table'),
   dishesTable: document.getElementById('dishes-table'),
   reportsTable: document.getElementById('reports-table'),
+  deletionTable: document.getElementById('deletion-table'),
 };
 
 function setError(message = '') {
@@ -455,6 +456,60 @@ async function loadReports() {
   );
 }
 
+async function loadDeletionRequests() {
+  const q = document.getElementById('deletion-search').value.trim();
+  const status = document.getElementById('deletion-status').value;
+  const params = new URLSearchParams({ limit: '100' });
+  if (q) params.set('q', q);
+  if (status) params.set('status', status);
+  const data = await adminFetch(`/account-deletion-requests?${params.toString()}`);
+  renderTable(
+    els.deletionTable,
+    ['Requested', 'Requester', 'Linked Account', 'Status', 'Review Check', 'Source', 'Note', 'Actions'],
+    data.map((item) => `
+      <tr>
+        <td>${escapeHtml(fmtDate(item.requestedAt))}</td>
+        <td>
+          <strong>${escapeHtml(item.fullName || item.user?.name || 'Unknown')}</strong>
+          <div class="muted">${escapeHtml(item.contactEmail || item.user?.email || 'No email')}</div>
+          <div class="muted">${escapeHtml(item.contactPhone || item.user?.phone || 'No phone')}</div>
+        </td>
+        <td>
+          ${item.user
+            ? `${escapeHtml(item.user.role)}<div class="muted">${item.user.deletedAt ? 'Already deleted' : (item.user.isActive ? 'Active' : 'Deactivated')}</div>`
+            : 'Public web request'}
+        </td>
+        <td><span class="pill ${pillClass(item.status)}">${escapeHtml(item.status)}</span></td>
+        <td>
+          ${item.reviewNeeds
+            ? `
+              Buyer orders: ${escapeHtml(item.reviewNeeds.activeBuyerOrders)}<br />
+              Chef orders: ${escapeHtml(item.reviewNeeds.activeChefOrders)}<br />
+              Direct offers: ${escapeHtml(item.reviewNeeds.activeDirectOffers)}
+            `
+            : 'Not linked'}
+        </td>
+        <td>${escapeHtml(item.source || 'APP')}</td>
+        <td>${escapeHtml(item.note || '—')}</td>
+        <td>
+          <div class="table-actions">
+            ${item.status !== 'IN_REVIEW' && item.status !== 'COMPLETED'
+              ? `<button class="mini-btn" data-action="deletion-status" data-id="${item.id}" data-status="IN_REVIEW">Review</button>`
+              : ''}
+            ${item.userId && item.status !== 'COMPLETED'
+              ? `<button class="mini-btn ok" data-action="process-deletion" data-id="${item.id}">Complete</button>`
+              : ''}
+            ${item.status !== 'REJECTED' && item.status !== 'COMPLETED'
+              ? `<button class="mini-btn warn" data-action="reject-deletion" data-id="${item.id}">Reject</button>`
+              : ''}
+          </div>
+        </td>
+      </tr>
+    `),
+    1480,
+  );
+}
+
 async function loadActiveTab() {
   setError('');
   try {
@@ -466,6 +521,7 @@ async function loadActiveTab() {
     if (state.activeTab === 'offers') await loadOffers();
     if (state.activeTab === 'dishes') await loadDishes();
     if (state.activeTab === 'reports') await loadReports();
+    if (state.activeTab === 'deletion-requests') await loadDeletionRequests();
   } catch (error) {
     setError(error.message || 'Failed to load admin data.');
   }
@@ -528,6 +584,7 @@ document.getElementById('orders-load').addEventListener('click', loadOrders);
 document.getElementById('offers-load').addEventListener('click', loadOffers);
 document.getElementById('dishes-load').addEventListener('click', loadDishes);
 document.getElementById('reports-load').addEventListener('click', loadReports);
+document.getElementById('deletion-load').addEventListener('click', loadDeletionRequests);
 
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
@@ -578,6 +635,31 @@ document.addEventListener('click', async (event) => {
       });
       await loadReports();
       await loadOverview();
+    }
+    if (action === 'deletion-status') {
+      await adminFetch(`/account-deletion-requests/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: button.dataset.status }),
+      });
+      await loadDeletionRequests();
+    }
+    if (action === 'process-deletion') {
+      if (!window.confirm('Complete deletion for this linked account? This anonymizes retained data and finishes the request.')) return;
+      await adminFetch(`/account-deletion-requests/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ processDeletion: true }),
+      });
+      await loadDeletionRequests();
+      await loadUsers();
+      await loadOverview();
+    }
+    if (action === 'reject-deletion') {
+      const note = window.prompt('Optional rejection note', '') ?? '';
+      await adminFetch(`/account-deletion-requests/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'REJECTED', note }),
+      });
+      await loadDeletionRequests();
     }
   } catch (error) {
     setError(error.message || 'Action failed');

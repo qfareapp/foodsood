@@ -41,6 +41,7 @@
             <button class="nav-link" data-tab="offers">Direct Offers</button>
             <button class="nav-link" data-tab="dishes">Today Board</button>
             <button class="nav-link" data-tab="reports">Reports</button>
+            <button class="nav-link" data-tab="deletion-requests">Deletion Requests</button>
           </nav>
           <a class="ghost-btn" href="/privacy-policy" target="_blank" rel="noreferrer">Privacy Policy</a>
           <button id="logout-btn" class="ghost-btn">Logout</button>
@@ -209,6 +210,26 @@
                 <h3>User Reports</h3>
               </div>
               <div id="reports-table" class="table-wrap"></div>
+            </section>
+          </section>
+
+          <section id="tab-deletion-requests" class="tab-panel hidden">
+            <div class="toolbar">
+              <input id="deletion-search" class="toolbar-input" placeholder="Search name, email, phone, note" />
+              <select id="deletion-status" class="toolbar-select">
+                <option value="">All statuses</option>
+                <option value="PENDING">PENDING</option>
+                <option value="IN_REVIEW">IN_REVIEW</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="REJECTED">REJECTED</option>
+              </select>
+              <button id="deletion-load" class="ghost-btn">Apply</button>
+            </div>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Account Deletion Requests</h3>
+              </div>
+              <div id="deletion-table" class="table-wrap"></div>
             </section>
           </section>
         </main>

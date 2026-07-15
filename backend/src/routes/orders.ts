@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { createCashfreeOrder, generateCashfreeOrderId, isCashfreeReady } from '../lib/cashfree';
 import prisma from '../lib/prisma';
 import { assertNotBlocked } from '../lib/moderation';
 import { AuthRequest, requireAuth } from '../middleware/auth';
@@ -48,6 +49,20 @@ function parseCookTimeToMinutes(cookTime?: string | null): number {
   if (normalized.includes('hr')) return Math.round(num * 60);
   if (normalized.includes('min')) return Math.round(num);
   return Math.round(num * 60);
+}
+
+function getBuyerCashfreeCustomer(input: {
+  id: string;
+  name: string;
+  email?: string | null;
+  phone: string;
+}) {
+  return {
+    customerId: input.id,
+    customerName: input.name.trim().slice(0, 100) || 'Foodsood Buyer',
+    customerEmail: input.email?.trim().toLowerCase() || undefined,
+    customerPhone: input.phone.trim(),
+  };
 }
 
 async function expireHeldOrders() {
@@ -327,6 +342,94 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
   });
 });
 
+router.post('/:id/cashfree/session', requireAuth, async (req: AuthRequest, res) => {
+  await expireHeldOrders();
+  if (!isCashfreeReady()) {
+    res.status(503).json({ error: 'Cashfree is not configured on the server' });
+    return;
+  }
+
+  const orderId = firstParam(req.params.id);
+  if (!orderId) return res.status(400).json({ error: 'Order id required' });
+  const schema = z.object({
+    paymentType: z.enum(['full', 'advance']).default('full'),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: {
+      buyer: { select: { id: true, name: true, email: true, phone: true } },
+      request: { select: { dishName: true } },
+    },
+  });
+  if (!order) {
+    res.status(404).json({ error: 'Order not found' });
+    return;
+  }
+  if (order.buyerId !== req.user!.userId) {
+    res.status(403).json({ error: 'Only the buyer can pay for this order' });
+    return;
+  }
+  if (order.paymentStatus !== 'HOLD') {
+    res.status(409).json({ error: 'Order is not awaiting payment' });
+    return;
+  }
+  if (!order.holdUntil || order.holdUntil.getTime() <= Date.now()) {
+    await prisma.order.update({ where: { id: order.id }, data: { paymentStatus: 'EXPIRED' } });
+    await prisma.request.update({ where: { id: order.requestId }, data: { status: 'EXPIRED' } });
+    res.status(409).json({ error: 'Payment window expired' });
+    return;
+  }
+
+  const isAdvance = parsed.data.paymentType === 'advance';
+  const payableAmount = isAdvance ? Math.ceil(order.finalPrice * 0.2) : order.finalPrice;
+  const cashfreeOrderId = generateCashfreeOrderId('ORDER', order.id, 'initial');
+  try {
+    const cfOrder = await createCashfreeOrder({
+      cashfreeOrderId,
+      amount: payableAmount,
+      customer: getBuyerCashfreeCustomer(order.buyer),
+      note: `${order.request.dishName} order payment`,
+      expiresAt: order.holdUntil,
+      tags: {
+        entityType: 'ORDER',
+        entityId: order.id,
+        paymentStage: 'initial',
+        paymentType: parsed.data.paymentType,
+      },
+    });
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        paymentGateway: 'CASHFREE',
+        paymentType: isAdvance ? 'ADVANCE' : 'FULL',
+        advancePaid: isAdvance ? payableAmount : null,
+        cashfreeOrderId,
+        cashfreePaymentSessionId: cfOrder.payment_session_id,
+        cashfreeOrderStatus: cfOrder.order_status,
+        paymentInitiatedAt: new Date(),
+      },
+    });
+
+    res.json({
+      gateway: 'CASHFREE',
+      cashfreeOrderId,
+      paymentSessionId: cfOrder.payment_session_id,
+      environment: process.env.CASHFREE_ENV?.trim().toUpperCase() === 'PRODUCTION' ? 'PRODUCTION' : 'SANDBOX',
+      amount: payableAmount,
+      paymentType: parsed.data.paymentType,
+    });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree payment session' });
+  }
+});
+
 router.post('/:id/pay-balance', requireAuth, async (req: AuthRequest, res) => {
   const orderId = firstParam(req.params.id);
   if (!orderId) return res.status(400).json({ error: 'Order id required' });
@@ -380,6 +483,79 @@ router.post('/:id/pay-balance', requireAuth, async (req: AuthRequest, res) => {
       preferences: JSON.parse(updated.request.preferences) as string[],
     },
   });
+});
+
+router.post('/:id/cashfree/balance-session', requireAuth, async (req: AuthRequest, res) => {
+  if (!isCashfreeReady()) {
+    res.status(503).json({ error: 'Cashfree is not configured on the server' });
+    return;
+  }
+
+  const orderId = firstParam(req.params.id);
+  if (!orderId) return res.status(400).json({ error: 'Order id required' });
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: {
+      buyer: { select: { id: true, name: true, email: true, phone: true } },
+      request: { select: { dishName: true } },
+    },
+  });
+  if (!order) {
+    res.status(404).json({ error: 'Order not found' });
+    return;
+  }
+  if (order.buyerId !== req.user!.userId) {
+    res.status(403).json({ error: 'Only the buyer can pay the balance' });
+    return;
+  }
+  if (order.paymentStatus !== 'ADVANCE_PAID') {
+    res.status(409).json({ error: 'Balance payment only applies to advance-paid orders' });
+    return;
+  }
+
+  const payableAmount = order.finalPrice - (order.advancePaid ?? 0);
+  if (payableAmount <= 0) {
+    res.status(409).json({ error: 'No balance due for this order' });
+    return;
+  }
+
+  const cashfreeOrderId = generateCashfreeOrderId('ORDER', order.id, 'balance');
+  try {
+    const cfOrder = await createCashfreeOrder({
+      cashfreeOrderId,
+      amount: payableAmount,
+      customer: getBuyerCashfreeCustomer(order.buyer),
+      note: `${order.request.dishName} balance payment`,
+      tags: {
+        entityType: 'ORDER',
+        entityId: order.id,
+        paymentStage: 'balance',
+        paymentType: 'balance',
+      },
+    });
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        paymentGateway: 'CASHFREE',
+        cashfreeBalanceOrderId: cashfreeOrderId,
+        cashfreeBalancePaymentSessionId: cfOrder.payment_session_id,
+        cashfreeBalanceOrderStatus: cfOrder.order_status,
+        balancePaymentInitiatedAt: new Date(),
+      },
+    });
+
+    res.json({
+      gateway: 'CASHFREE',
+      cashfreeOrderId,
+      paymentSessionId: cfOrder.payment_session_id,
+      environment: process.env.CASHFREE_ENV?.trim().toUpperCase() === 'PRODUCTION' ? 'PRODUCTION' : 'SANDBOX',
+      amount: payableAmount,
+      paymentType: 'balance',
+    });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree balance payment session' });
+  }
 });
 
 // ── POST /api/orders/:id/review  (buyer reviews the chef after delivery) ─────

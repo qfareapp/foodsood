@@ -4,10 +4,14 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Location from 'expo-location';
 import * as SecureStore from 'expo-secure-store';
 import Slider from '@react-native-community/slider';
+import { CFPaymentGatewayService, type CFCallback, CFErrorResponse } from 'react-native-cashfree-pg-sdk';
 import { WebView } from 'react-native-webview';
+import { CFEnvironment, CFSession } from 'cashfree-pg-api-contract';
 import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  AppState,
+  type AppStateStatus,
   Animated,
   Dimensions,
   Image,
@@ -46,7 +50,7 @@ const C = {
 const LOCAL_API_BASE =
   Platform.OS === 'web'
     ? 'http://localhost:3000/api'
-    : 'http://192.168.16.22:3000/api';
+    : 'http://192.168.15.138:3000/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 const PRIVACY_POLICY_URL = `${API_BASE.replace(/\/api$/, '')}/privacy-policy`;
@@ -333,6 +337,15 @@ interface BuyerAuthResponse {
   refreshToken: string;
 }
 
+interface CashfreeSessionResponse {
+  gateway: 'CASHFREE';
+  cashfreeOrderId: string;
+  paymentSessionId: string;
+  environment: 'SANDBOX' | 'PRODUCTION';
+  amount: number;
+  paymentType: 'full' | 'advance' | 'balance';
+}
+
 interface BuyerNotificationCard {
   id: string;
   emoji: string;
@@ -490,6 +503,23 @@ function countdownTo(iso?: string | null): string | null {
   const seconds = remaining % 60;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+}
+
+function hasMeaningfulLocationChange(current?: number | null, next?: number | null): boolean {
+  if (current == null || next == null) return current !== next;
+  return Math.abs(current - next) > 0.0001;
+}
+
+const SAVED_ADDRESS_MATCH_RADIUS_KM = 2;
+
+function distanceKmBetween(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 async function buyerApi<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -738,34 +768,9 @@ const formatMemberSince = (iso?: string) => {
   return `Member since ${date.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}`;
 };
 
-const MENU_GROUPS = [
-  {
-    title: 'My Activity',
-    items: [
-      { icon: '\u25A3', iconBg: C.blush, label: 'My Orders', sub: '18 orders placed', badge: null },
-      { icon: '\u270E', iconBg: C.paleGreen, label: 'My Requests', sub: '1 active | 4 completed', badge: '1' },
-      { icon: '\u2605', iconBg: C.paleBlue, label: 'My Reviews', sub: "Reviews I\'ve left", badge: null },
-      { icon: '\u2665', iconBg: '#FEE2E2', label: 'Saved Chefs', sub: '3 favourite chefs', badge: null },
-    ],
-  },
-  {
-    title: 'Account',
-    items: [
-      { icon: '\u2302', iconBg: C.paleYellow, label: 'Saved Addresses', sub: 'Home, Office', badge: null },
-      { icon: '\u20B9', iconBg: '#F3E8FF', label: 'Payment Methods', sub: 'UPI | Cash', badge: null },
-      { icon: '\u25CB', iconBg: C.paleGreen, label: 'Notifications', sub: 'Quotes, updates', badge: '2' },
-      { icon: '\u25CF', iconBg: '#F1F5F9', label: 'Privacy & Security', sub: 'Password, 2FA', badge: null },
-    ],
-  },
-  {
-    title: 'Support',
-    items: [
-      { icon: '?', iconBg: '#EEF2FF', label: 'Help & Support', sub: 'FAQs, chat with us', badge: null },
-      { icon: '!', iconBg: '#FEF9EE', label: 'Report an Issue', sub: 'Order problems', badge: null },
-      { icon: 'i', iconBg: C.cream, label: 'About App', sub: 'Version 1.0.0', badge: null },
-    ],
-  },
-];
+const isPlaceholderEmail = (email?: string | null) => !email || email.trim().toLowerCase().endsWith('@buyer.local');
+
+const SUPPORT_WHATSAPP_NUMBER = '919831003953';
 
 const QUOTES = [
   { id: '1', initial: 'P', avatarColor: C.spice, name: 'Priya Mehta', rating: '4.9', orders: '124', distance: '0.4 km', price: 300, cookTime: '~2 hrs', delivery: 'Pickup', style: 'Bengali', isBest: true, accentColor: C.mint },
@@ -1062,6 +1067,13 @@ export default function App() {
   const [marketSuggestionLoading, setMarketSuggestionLoading] = useState(false);
   const [notifEnabled, setNotifEnabled] = useState(true);
   const [buyerHelpExpanded, setBuyerHelpExpanded] = useState(false);
+  const [savedAddressesExpanded, setSavedAddressesExpanded] = useState(false);
+  const [contactEditField, setContactEditField] = useState<'phone' | 'email' | null>(null);
+  const [contactEditValue, setContactEditValue] = useState('');
+  const [contactEditOtp, setContactEditOtp] = useState('');
+  const [contactOtpSent, setContactOtpSent] = useState(false);
+  const [contactEditBusy, setContactEditBusy] = useState(false);
+  const [locationUpdateBusy, setLocationUpdateBusy] = useState(false);
   const [quotesBudget, setQuotesBudget] = useState(300);
   const [counterChef, setCounterChef] = useState<BuyerQuoteCardItem | null>(null);
   const [floatedDish, setFloatedDish] = useState<FloatedDish | null>(null);
@@ -1099,9 +1111,16 @@ export default function App() {
   const mapWebViewRef = useRef<WebView>(null);
   const mapLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mapLookupSeqRef = useRef(0);
+  const buyerProfileRef = useRef<BuyerProfile | null>(null);
+  const locationRefreshInFlightRef = useRef(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const buyerDisplayName = buyerProfile?.name ?? 'Buyer';
   const buyerInitial = buyerDisplayName.trim().charAt(0).toUpperCase() || 'B';
   const filteredCooking = cookingFeed;
+
+  useEffect(() => {
+    buyerProfileRef.current = buyerProfile;
+  }, [buyerProfile]);
 
   const loadCookingFeed = async (coordsOverride?: { lat: number; lng: number } | null) => {
     setCookingLoading(true);
@@ -1170,6 +1189,34 @@ export default function App() {
   }, [buyerProfile?.id]);
 
   useEffect(() => {
+    if (!buyerProfile) return;
+    if (buyerProfile.city?.trim()) {
+      setLocation(buyerProfile.city.trim());
+      setLocationSearch(buyerProfile.city.trim());
+    }
+    if (buyerProfile.location?.trim()) setLocationAddress(buyerProfile.location.trim());
+    if (buyerProfile.lat != null && buyerProfile.lng != null) {
+      setUserCoords({ lat: buyerProfile.lat, lng: buyerProfile.lng });
+    }
+  }, [buyerProfile?.id, buyerProfile?.city, buyerProfile?.location, buyerProfile?.lat, buyerProfile?.lng]);
+
+  useEffect(() => {
+    if (!buyerProfile?.id) return;
+    void refreshBuyerLocationFromDevice();
+  }, [buyerProfile?.id]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const wasBackgrounded = appStateRef.current === 'background' || appStateRef.current === 'inactive';
+      appStateRef.current = nextState;
+      if (wasBackgrounded && nextState === 'active') {
+        void refreshBuyerLocationFromDevice();
+      }
+    });
+    return () => subscription.remove();
+  }, [buyerProfile?.id]);
+
+  useEffect(() => {
     if (!showLocationMapModal || !draftMapCoords) return;
     if (mapLookupTimeoutRef.current) clearTimeout(mapLookupTimeoutRef.current);
     const seq = ++mapLookupSeqRef.current;
@@ -1229,8 +1276,7 @@ export default function App() {
     }
   };
 
-  const applySelectedCoords = async (latitude: number, longitude: number) => {
-    setUserCoords({ lat: latitude, lng: longitude });
+  const resolveLocationDetails = async (latitude: number, longitude: number) => {
     const [place] = await Location.reverseGeocodeAsync({ latitude, longitude });
     if (place) {
       const shortParts = [place.city || place.subregion, place.region].filter(Boolean);
@@ -1243,11 +1289,72 @@ export default function App() {
         place.postalCode,
         place.country,
       ].filter(Boolean);
-      const nextLocation = shortParts.join(', ') || addressParts.join(', ');
-      setLocation(nextLocation);
-      setLocationSearch(nextLocation);
-      setLocationAddress(addressParts.join(', '));
-      setLocationLandmark(place.name && place.street && place.name !== place.street ? place.name : '');
+      return {
+        displayLocation: shortParts.join(', ') || addressParts.join(', '),
+        fullAddress: addressParts.join(', '),
+        landmark: place.name && place.street && place.name !== place.street ? place.name : '',
+      };
+    }
+    return { displayLocation: '', fullAddress: '', landmark: '' };
+  };
+
+  const applyResolvedLocationDetails = (
+    latitude: number,
+    longitude: number,
+    details: { displayLocation: string; fullAddress: string; landmark: string },
+  ) => {
+    setUserCoords({ lat: latitude, lng: longitude });
+    if (details.displayLocation) {
+      setLocation(details.displayLocation);
+      setLocationSearch(details.displayLocation);
+    }
+    if (details.fullAddress) setLocationAddress(details.fullAddress);
+    if (details.landmark) setLocationLandmark(details.landmark);
+  };
+
+  const applySelectedCoords = async (latitude: number, longitude: number) => {
+    const details = await resolveLocationDetails(latitude, longitude);
+    applyResolvedLocationDetails(latitude, longitude, details);
+  };
+
+  const refreshBuyerLocationFromDevice = async () => {
+    const profile = buyerProfileRef.current;
+    if (!profile || locationRefreshInFlightRef.current) return;
+
+    try {
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== 'granted') return;
+
+      locationRefreshInFlightRef.current = true;
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const { latitude, longitude } = pos.coords;
+      const details = await resolveLocationDetails(latitude, longitude);
+      applyResolvedLocationDetails(latitude, longitude, details);
+
+      const nextCity = details.displayLocation || profile.city?.trim() || '';
+      const nextLocation = details.fullAddress || details.displayLocation || profile.location?.trim() || '';
+      const shouldUpdateProfile =
+        hasMeaningfulLocationChange(profile.lat, latitude) ||
+        hasMeaningfulLocationChange(profile.lng, longitude) ||
+        (profile.city?.trim() || '') !== nextCity ||
+        (profile.location?.trim() || '') !== nextLocation;
+
+      if (!shouldUpdateProfile) return;
+
+      const updatedProfile = await buyerApi<BuyerProfile>('/users/me', {
+        method: 'PUT',
+        body: JSON.stringify({
+          city: nextCity || undefined,
+          location: nextLocation || undefined,
+          lat: latitude,
+          lng: longitude,
+        }),
+      });
+      setBuyerProfile(updatedProfile);
+    } catch {
+      // Keep app-open refresh silent.
+    } finally {
+      locationRefreshInFlightRef.current = false;
     }
   };
 
@@ -1283,6 +1390,87 @@ export default function App() {
     } finally {
       setLocating(false);
     }
+  };
+
+  const updateUserLocation = async () => {
+    if (locationUpdateBusy) return;
+    setLocationUpdateBusy(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setSavedAddressesExpanded(true);
+        Alert.alert('Location access unavailable', "We couldn't access your live location. Pick one of your saved addresses below instead.");
+        return;
+      }
+
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const { latitude, longitude } = pos.coords;
+      const details = await resolveLocationDetails(latitude, longitude);
+      applyResolvedLocationDetails(latitude, longitude, details);
+
+      if (buyerProfile) {
+        const nextCity = details.displayLocation || buyerProfile.city?.trim() || '';
+        const nextLocationText = details.fullAddress || details.displayLocation || buyerProfile.location?.trim() || '';
+        try {
+          const updatedProfile = await buyerApi<BuyerProfile>('/users/me', {
+            method: 'PUT',
+            body: JSON.stringify({
+              city: nextCity || undefined,
+              location: nextLocationText || undefined,
+              lat: latitude,
+              lng: longitude,
+            }),
+          });
+          setBuyerProfile(updatedProfile);
+        } catch {
+          // Local location already applied; profile sync can retry on next refresh.
+        }
+      }
+
+      Alert.alert('Location updated', "We're now tracking your current location.");
+    } catch {
+      setSavedAddressesExpanded(true);
+      Alert.alert('Could not detect your location', "We couldn't fetch your live location. Pick one of your saved addresses below instead.");
+    } finally {
+      setLocationUpdateBusy(false);
+    }
+  };
+
+  const selectSavedAddress = async (address: BuyerAddress) => {
+    const applyAddress = () => {
+      setLocationAddress(address.address);
+      if (address.lat != null && address.lng != null) {
+        setUserCoords({ lat: address.lat, lng: address.lng });
+      }
+    };
+
+    if (address.lat == null || address.lng == null) {
+      applyAddress();
+      return;
+    }
+
+    try {
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status === 'granted') {
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const distance = distanceKmBetween(pos.coords.latitude, pos.coords.longitude, address.lat, address.lng);
+        if (distance > SAVED_ADDRESS_MATCH_RADIUS_KM) {
+          Alert.alert(
+            "You're not at this location",
+            `Your current location is about ${distance.toFixed(1)} km from "${address.label}". Do you want to use this address anyway?`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Proceed', onPress: applyAddress },
+            ],
+          );
+          return;
+        }
+      }
+    } catch {
+      // Could not verify device location — fall through and apply the saved address directly.
+    }
+
+    applyAddress();
   };
 
   const pickBuildingImage = async () => {
@@ -1903,6 +2091,25 @@ export default function App() {
     setScreen('auth');
   };
 
+  const openSupportWhatsApp = async () => {
+    const supportMessage = [
+      'Hello Foodsood Support, I need help.',
+      '',
+      `Name: ${buyerDisplayName}`,
+      `User ID: ${buyerProfile?.id ?? 'Guest'}`,
+      `Phone: ${buyerProfile?.phone?.trim() || 'Not added'}`,
+      `Email: ${buyerProfile?.email?.trim() || 'Not added'}`,
+      `Location: ${location !== 'Set your location' ? location : buyerProfile?.location?.trim() || 'Not added'}`,
+    ].join('\n');
+
+    const whatsappUrl = `https://wa.me/${SUPPORT_WHATSAPP_NUMBER}?text=${encodeURIComponent(supportMessage)}`;
+    try {
+      await Linking.openURL(whatsappUrl);
+    } catch {
+      Alert.alert('WhatsApp unavailable', 'Could not open WhatsApp support right now.');
+    }
+  };
+
   const requestBuyerAccountDeletion = async () => {
     try {
       await buyerApi<{ success: true; status: string }>('/users/me/delete-request', {
@@ -1913,6 +2120,88 @@ export default function App() {
       Alert.alert('Deletion requested', 'Your account deletion request was submitted and your account has been deactivated.');
     } catch (error) {
       Alert.alert('Request failed', error instanceof Error ? error.message : 'Could not submit account deletion request.');
+    }
+  };
+
+  const openContactEdit = (field: 'phone' | 'email') => {
+    const current = field === 'phone' ? buyerProfile?.phone : buyerProfile?.email;
+    setContactEditField(field);
+    setContactEditValue(field === 'email' && isPlaceholderEmail(current) ? '' : (current?.trim() ?? ''));
+    setContactEditOtp('');
+    setContactOtpSent(false);
+  };
+
+  const closeContactEdit = () => {
+    setContactEditField(null);
+    setContactEditValue('');
+    setContactEditOtp('');
+    setContactOtpSent(false);
+    setContactEditBusy(false);
+  };
+
+  const savePhoneNumber = async () => {
+    const phone = contactEditValue.trim();
+    if (!/^\d{10}$/.test(phone)) {
+      Alert.alert('Invalid phone number', 'Enter a valid 10-digit phone number.');
+      return;
+    }
+    setContactEditBusy(true);
+    try {
+      const updated = await buyerApi<BuyerProfile>('/users/me/phone', {
+        method: 'PATCH',
+        body: JSON.stringify({ phone }),
+      });
+      setBuyerProfile(updated);
+      closeContactEdit();
+      Alert.alert('Phone number updated', 'Your phone number has been updated successfully.');
+    } catch (error) {
+      Alert.alert('Update failed', error instanceof Error ? error.message : 'Could not update phone number.');
+    } finally {
+      setContactEditBusy(false);
+    }
+  };
+
+  const sendEmailUpdateOtp = async () => {
+    const email = contactEditValue.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      Alert.alert('Invalid email', 'Enter a valid email address.');
+      return;
+    }
+    setContactEditBusy(true);
+    try {
+      await buyerApi('/users/me/email/send-otp', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      });
+      setContactOtpSent(true);
+      setContactEditOtp('');
+    } catch (error) {
+      Alert.alert('Could not send code', error instanceof Error ? error.message : 'Failed to send verification email.');
+    } finally {
+      setContactEditBusy(false);
+    }
+  };
+
+  const verifyEmailUpdateOtp = async () => {
+    const email = contactEditValue.trim().toLowerCase();
+    const otp = contactEditOtp.trim();
+    if (otp.length !== 6) {
+      Alert.alert('Invalid code', 'Enter the 6-digit verification code sent to your email.');
+      return;
+    }
+    setContactEditBusy(true);
+    try {
+      const updated = await buyerApi<BuyerProfile>('/users/me/email/verify-otp', {
+        method: 'POST',
+        body: JSON.stringify({ email, otp }),
+      });
+      setBuyerProfile(updated);
+      closeContactEdit();
+      Alert.alert('Email updated', 'Your email address has been verified and updated.');
+    } catch (error) {
+      Alert.alert('Verification failed', error instanceof Error ? error.message : 'Could not verify code.');
+    } finally {
+      setContactEditBusy(false);
     }
   };
 
@@ -2073,6 +2362,7 @@ export default function App() {
   const [checkoutPaymentType, setCheckoutPaymentType] = useState<'full' | 'advance'>('full');
   const [bringOwnContainer, setBringOwnContainer] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [cashfreeVerifying, setCashfreeVerifying] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reviewState, setReviewState] = useState<ReviewPromptState>({});
   const [reviewStateReady, setReviewStateReady] = useState(false);
@@ -2257,14 +2547,18 @@ export default function App() {
     .slice(0, 10);
   const savedChefCount = savedChefs.length;
   const savedAddressCount = savedAddresses.length;
-  const profileMenuGroups = MENU_GROUPS.map((group) => ({
-    ...group,
-    items: group.items.map((item) => item.label === 'Saved Chefs'
-      ? { ...item, sub: savedChefCount > 0 ? `${savedChefCount} favourite chef${savedChefCount > 1 ? 's' : ''}` : 'No saved chefs yet' }
-      : item.label === 'Saved Addresses'
-        ? { ...item, sub: savedAddressCount > 0 ? `${savedAddressCount} saved address${savedAddressCount > 1 ? 'es' : ''}` : 'No saved addresses yet' }
-        : item),
-  }));
+  const activeOrderCount = placedOrders.length + requestPlacedOrders.length + holdOrders.length + requestHoldOrders.length;
+  const completedOrderCount = deliveredOrders.length + requestDeliveredOrders.length;
+  const profileSummaryItems = [
+    { label: 'Active Orders', value: String(activeOrderCount) },
+    { label: 'Completed Orders', value: String(completedOrderCount) },
+    { label: 'Requests Raised', value: String(myRequests.length) },
+    { label: 'Saved Chefs', value: String(savedChefCount) },
+  ];
+  const accountDetailsItems = [
+    { label: 'Saved Addresses', value: String(savedAddressCount) },
+    { label: 'Member Since', value: formatMemberSince(buyerProfile?.createdAt) },
+  ];
   const buyerOrderSections = [
     {
       key: 'payment',
@@ -2371,29 +2665,33 @@ export default function App() {
 
   const payForOffer = async () => {
     if (!checkoutOffer || !buyerToken) return;
+    if (Platform.OS === 'web') {
+      Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
+      return;
+    }
     setCheckoutBusy(true);
     try {
-      const res = await fetch(`${API_BASE}/offers/${checkoutOffer.id}/pay`, {
+      const res = await fetch(`${API_BASE}/offers/${checkoutOffer.id}/cashfree/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           buyerToken,
           deliveryMode: checkoutDelivery,
-          paymentMethod: 'demo',
           paymentType: checkoutPaymentType,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error((data as { error?: string }).error ?? 'Payment failed');
+      const data = await res.json() as CashfreeSessionResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Could not start Cashfree payment');
+      const session = new CFSession(
+        data.paymentSessionId,
+        data.cashfreeOrderId,
+        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+      );
+      CFPaymentGatewayService.doWebPayment(session);
       setCheckoutOffer(null);
       setCheckoutPaymentType('full');
-      await loadMyOffers(buyerToken);
-      const msg = checkoutPaymentType === 'advance'
-        ? 'Your order is confirmed with 20% advance. Pay the balance before delivery.'
-        : 'Your order is confirmed and the chef has been notified.';
-      Alert.alert('Payment successful', msg);
     } catch (error) {
-      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete demo payment.');
+      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not start Cashfree payment.');
     } finally {
       setCheckoutBusy(false);
     }
@@ -2401,22 +2699,26 @@ export default function App() {
 
   const payForRequestOrder = async () => {
     if (!checkoutRequestOrder) return;
+    if (Platform.OS === 'web') {
+      Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
+      return;
+    }
     setCheckoutBusy(true);
     try {
-      await buyerApi<BuyerRequestOrderItem>(`/orders/${checkoutRequestOrder.id}/pay`, {
+      const data = await buyerApi<CashfreeSessionResponse>(`/orders/${checkoutRequestOrder.id}/cashfree/session`, {
         method: 'POST',
-        body: JSON.stringify({ paymentMethod: 'demo', paymentType: checkoutPaymentType }),
+        body: JSON.stringify({ paymentType: checkoutPaymentType }),
       });
+      const session = new CFSession(
+        data.paymentSessionId,
+        data.cashfreeOrderId,
+        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+      );
+      CFPaymentGatewayService.doWebPayment(session);
       setCheckoutRequestOrder(null);
       setCheckoutPaymentType('full');
-      await loadMyRequestOrders();
-      await loadMyRequests();
-      const msg = checkoutPaymentType === 'advance'
-        ? 'Your order is confirmed with 20% advance. Pay the balance before delivery.'
-        : 'Your request order is confirmed and the chef has been notified.';
-      Alert.alert('Payment successful', msg);
     } catch (error) {
-      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete demo payment.');
+      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not start Cashfree payment.');
     } finally {
       setCheckoutBusy(false);
     }
@@ -2424,28 +2726,47 @@ export default function App() {
 
   const payBalanceForOffer = async (offer: DishOfferItem) => {
     if (!buyerToken) return;
+    if (Platform.OS === 'web') {
+      Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
+      return;
+    }
     try {
-      const res = await fetch(`${API_BASE}/offers/${offer.id}/pay-balance`, {
+      const res = await fetch(`${API_BASE}/offers/${offer.id}/cashfree/balance-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ buyerToken }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error((data as { error?: string }).error ?? 'Payment failed');
-      await loadMyOffers(buyerToken);
-      Alert.alert('Balance paid', 'Your remaining balance has been paid. Thank you!');
+      const data = await res.json() as CashfreeSessionResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Could not start Cashfree payment');
+      const session = new CFSession(
+        data.paymentSessionId,
+        data.cashfreeOrderId,
+        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+      );
+      CFPaymentGatewayService.doWebPayment(session);
     } catch (error) {
-      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete balance payment.');
+      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not start Cashfree balance payment.');
     }
   };
 
   const payBalanceForRequestOrder = async (order: BuyerRequestOrderItem) => {
     try {
-      await buyerApi<BuyerRequestOrderItem>(`/orders/${order.id}/pay-balance`, { method: 'POST', body: JSON.stringify({}) });
-      await loadMyRequestOrders();
-      Alert.alert('Balance paid', 'Your remaining balance has been paid. Thank you!');
+      if (Platform.OS === 'web') {
+        Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
+        return;
+      }
+      const data = await buyerApi<CashfreeSessionResponse>(`/orders/${order.id}/cashfree/balance-session`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      const session = new CFSession(
+        data.paymentSessionId,
+        data.cashfreeOrderId,
+        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+      );
+      CFPaymentGatewayService.doWebPayment(session);
     } catch (error) {
-      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not complete balance payment.');
+      Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not start Cashfree balance payment.');
     }
   };
 
@@ -2467,6 +2788,65 @@ export default function App() {
       setRefreshing(false);
     }
   };
+
+  const verifyCashfreePayment = async (cashfreeOrderId: string) => {
+    setCashfreeVerifying(true);
+    try {
+      const res = await fetch(`${API_BASE}/payments/cashfree/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cashfreeOrderId }),
+      });
+      const data = await res.json() as {
+        verified?: boolean;
+        entityType?: 'ORDER' | 'OFFER';
+        paymentStage?: 'initial' | 'balance';
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? 'Could not verify payment');
+
+      if (buyerToken) await loadMyOffers(buyerToken);
+      if (buyerProfile) {
+        await loadMyRequests();
+        await loadMyRequestOrders();
+      }
+      if (currentRequestId) await loadCurrentRequest(currentRequestId);
+
+      if (data.verified) {
+        const message = data.paymentStage === 'balance'
+          ? 'Your Cashfree balance payment was confirmed.'
+          : 'Your Cashfree payment was confirmed.';
+        Alert.alert('Payment successful', message);
+      } else {
+        Alert.alert('Payment pending', 'Cashfree payment is still processing. Please refresh your orders in a moment.');
+      }
+    } catch (error) {
+      Alert.alert('Verification failed', error instanceof Error ? error.message : 'Could not verify Cashfree payment.');
+    } finally {
+      setCashfreeVerifying(false);
+    }
+  };
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const callback: CFCallback = {
+      onVerify: (orderID) => {
+        void verifyCashfreePayment(orderID);
+      },
+      onError: (error, orderID) => {
+        const message = error instanceof CFErrorResponse ? error.getMessage() : 'Could not complete Cashfree payment.';
+        Alert.alert('Payment failed', message || 'Could not complete Cashfree payment.');
+        if (orderID) {
+          void verifyCashfreePayment(orderID);
+        }
+      },
+    };
+
+    CFPaymentGatewayService.setCallback(callback);
+    return () => {
+      CFPaymentGatewayService.removeCallback();
+    };
+  }, [buyerProfile, buyerToken, currentRequestId]);
 
   const snoozeReviewPrompt = async () => {
     if (!reviewPromptOffer) return;
@@ -4187,30 +4567,29 @@ export default function App() {
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshBuyerData} tintColor={C.mint} />}
           >
             <View style={profileSt.hero}>
-              <TouchableOpacity style={profileSt.settingsBtn} activeOpacity={0.75}>
-                <Text style={styles.settingsIcon}>⚙</Text>
-              </TouchableOpacity>
-
               <View style={profileSt.avatar}>
                 <Text style={profileSt.avatarText}>{buyerInitial}</Text>
               </View>
               <Text style={profileSt.name}>{buyerDisplayName}</Text>
-              <Text style={profileSt.location}>Location: {location !== 'Set your location' ? location : (buyerProfile?.location || 'Set your location')}</Text>
+              <View style={profileSt.locationRow}>
+                <Text style={profileSt.location}>📍 {location !== 'Set your location' ? location : (buyerProfile?.location || 'Set your location')}</Text>
+                <TouchableOpacity activeOpacity={0.7} onPress={updateUserLocation} disabled={locationUpdateBusy}>
+                  <Text style={profileSt.updateLocationLink}>{locationUpdateBusy ? 'Locating…' : 'Update'}</Text>
+                </TouchableOpacity>
+              </View>
               <Text style={profileSt.member}>{formatMemberSince(buyerProfile?.createdAt)}</Text>
-
-              <TouchableOpacity style={profileSt.editBtn} activeOpacity={0.8}>
-                <Text style={profileSt.editBtnText}>Edit Profile</Text>
-              </TouchableOpacity>
             </View>
 
             <View style={profileSt.statsRow}>
-              <StatBox num="18" label="Orders" />
-              <View style={profileSt.divider} />
-              <StatBox num="5" label="Requests" />
-              <View style={profileSt.divider} />
-              <StatBox num="4.8" label="Avg Rating" />
-              <View style={profileSt.divider} />
-              <StatBox num="₹4.2k" label="Spent" />
+              {profileSummaryItems.map((item, idx) => (
+                <View key={item.label} style={profileSt.statBoxWrap}>
+                  {idx > 0 ? <View style={profileSt.divider} /> : null}
+                  <View style={profileSt.statBox}>
+                    <Text style={profileSt.statNum}>{item.value}</Text>
+                    <Text style={profileSt.statLabel}>{item.label}</Text>
+                  </View>
+                </View>
+              ))}
             </View>
 
             <View style={styles.sectionRow}>
@@ -4269,10 +4648,48 @@ export default function App() {
               </ScrollView>
             )}
 
+            <View style={styles.menuGroup}>
+              <Text style={styles.menuGroupTitle}>Contact Details</Text>
+              <View style={styles.menuItem}>
+                <View style={profileSt.detailLeft}>
+                  <View style={[styles.menuIcon, { backgroundColor: C.paleGreen }]}>
+                    <Text style={styles.menuIconText}>{'📱'}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.menuLabel}>Phone</Text>
+                    <Text style={styles.menuSub}>{buyerProfile?.phone?.trim() || 'Not added'}</Text>
+                  </View>
+                </View>
+                <TouchableOpacity style={profileSt.editIconBtn} activeOpacity={0.7} onPress={() => openContactEdit('phone')}>
+                  <Text style={profileSt.editIconText}>{'✎'}</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.menuItem}>
+                <View style={profileSt.detailLeft}>
+                  <View style={[styles.menuIcon, { backgroundColor: C.blush }]}>
+                    <Text style={styles.menuIconText}>{'✉️'}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.menuLabel}>Email</Text>
+                    <Text style={styles.menuSub}>{isPlaceholderEmail(buyerProfile?.email) ? 'Not added' : buyerProfile?.email?.trim()}</Text>
+                  </View>
+                </View>
+                <TouchableOpacity style={profileSt.editIconBtn} activeOpacity={0.7} onPress={() => openContactEdit('email')}>
+                  <Text style={profileSt.editIconText}>{'✎'}</Text>
+                </TouchableOpacity>
+              </View>
+              {accountDetailsItems.map((item) => (
+                <View key={item.label} style={styles.menuItem}>
+                  <Text style={styles.menuLabel}>{item.label}</Text>
+                  <Text style={styles.savedChefMeta}>{item.value}</Text>
+                </View>
+              ))}
+            </View>
+
             <View style={styles.notifRow}>
               <View style={styles.notifLeft}>
                 <View style={[styles.menuIcon, { backgroundColor: C.paleGreen }]}>
-                  <Text style={styles.menuIconText}>Bell</Text>
+                  <Text style={styles.menuIconText}>{'🔔'}</Text>
                 </View>
                 <View>
                   <Text style={styles.menuLabel}>Push Notifications</Text>
@@ -4282,64 +4699,99 @@ export default function App() {
               <Switch value={notifEnabled} onValueChange={setNotifEnabled} trackColor={{ false: C.border, true: C.spice }} thumbColor={C.white} />
             </View>
 
-            {profileMenuGroups.map((group) => (
-              <View key={group.title} style={styles.menuGroup}>
-                <Text style={styles.menuGroupTitle}>{group.title}</Text>
-                {group.items.map((item) => (
-                  <MenuItem key={`${group.title}-${item.label}`} item={item} />
-                ))}
-                {group.title === 'Account' ? (
-                  <View style={styles.savedAddressesBlock}>
-                    <Text style={styles.savedAddressesTitle}>Saved Addresses</Text>
-                    {!savedAddressesReady ? (
-                      <Text style={styles.savedAddressesHint}>Loading saved addresses...</Text>
-                    ) : savedAddresses.length === 0 ? (
-                      <Text style={styles.savedAddressesHint}>Save an address from the location picker to keep it here.</Text>
-                    ) : (
-                      savedAddresses.map((address) => (
-                        <View key={address.id} style={styles.savedAddressCard}>
-                          <View style={styles.savedAddressIconWrap}>
+            <View style={styles.helpCard}>
+              <View style={styles.helpHeader}>
+                <TouchableOpacity
+                  style={styles.helpHeaderMain}
+                  activeOpacity={0.82}
+                  onPress={() => setSavedAddressesExpanded((curr) => !curr)}
+                >
+                  <View>
+                    <Text style={styles.helpTitle}>
+                      Saved Addresses{savedAddressesReady && savedAddresses.length > 0 ? ` (${savedAddresses.length})` : ''}
+                    </Text>
+                    <Text style={styles.helpSub}>
+                      {savedAddressesReady && savedAddresses.length > 0
+                        ? 'Quick access to your delivery addresses'
+                        : 'Save an address from the location picker to keep it here'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.helpExpandBtn}
+                  activeOpacity={0.82}
+                  onPress={() => setSavedAddressesExpanded((curr) => !curr)}
+                >
+                  <Text style={styles.helpChevron}>{savedAddressesExpanded ? '−' : '+'}</Text>
+                </TouchableOpacity>
+              </View>
+              {savedAddressesExpanded ? (
+                <View style={styles.helpBody}>
+                  {!savedAddressesReady ? (
+                    <Text style={styles.savedAddressesHint}>Loading saved addresses...</Text>
+                  ) : savedAddresses.length === 0 ? (
+                    <Text style={styles.savedAddressesHint}>Save an address from the location picker to keep it here.</Text>
+                  ) : (
+                    savedAddresses.map((address) => {
+                      const isSelected = locationAddress.trim().length > 0 && locationAddress.trim() === address.address.trim();
+                      return (
+                        <TouchableOpacity
+                          key={address.id}
+                          style={[styles.savedAddressCard, isSelected && styles.savedAddressCardSelected]}
+                          activeOpacity={0.75}
+                          onPress={() => selectSavedAddress(address)}
+                        >
+                          <View style={[styles.savedAddressIconWrap, isSelected && styles.savedAddressIconWrapSelected]}>
                             <Text style={styles.savedAddressIcon}>
-                              {address.label.toLowerCase() === 'home' ? '⌂' : address.label.toLowerCase() === 'office' ? '▣' : '✎'}
+                              {isSelected ? '✅' : address.label.toLowerCase() === 'home' ? '⌂' : address.label.toLowerCase() === 'office' ? '▣' : '✎'}
                             </Text>
                           </View>
                           <View style={styles.savedAddressCopy}>
                             <Text style={styles.savedAddressLabel}>{address.label}</Text>
                             <Text style={styles.savedAddressText}>{address.address}</Text>
                           </View>
-                        </View>
-                      ))
-                    )}
-                  </View>
-                ) : null}
-              </View>
-            ))}
-
-            <View style={styles.chefBanner}>
-              <View style={styles.chefBannerCopy}>
-                <Text style={styles.chefBannerTitle}>Love to cook?</Text>
-                <Text style={styles.chefBannerTitle}>Become a Chef</Text>
-                <Text style={styles.chefBannerSub}>Earn from your kitchen on your own schedule</Text>
-              </View>
-              <TouchableOpacity style={styles.chefBannerBtn} activeOpacity={0.85} onPress={goChefProfile}>
-                <Text style={styles.chefBannerBtnText}>Manage Profile</Text>
-              </TouchableOpacity>
+                          {isSelected ? (
+                            <View style={styles.savedAddressActiveBadge}>
+                              <Text style={styles.savedAddressActiveBadgeText}>Active</Text>
+                            </View>
+                          ) : null}
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.helpCard}>
-              <TouchableOpacity
-                style={styles.helpHeader}
-                activeOpacity={0.82}
-                onPress={() => setBuyerHelpExpanded((curr) => !curr)}
-              >
-                <View>
-                  <Text style={styles.helpTitle}>Help & Support</Text>
-                  <Text style={styles.helpSub}>Privacy, deletion, and account support</Text>
-                </View>
-                <Text style={styles.helpChevron}>{buyerHelpExpanded ? '−' : '+'}</Text>
-              </TouchableOpacity>
+              <View style={styles.helpHeader}>
+                <TouchableOpacity
+                  style={styles.helpHeaderMain}
+                  activeOpacity={0.82}
+                  onPress={openSupportWhatsApp}
+                >
+                  <View>
+                    <Text style={styles.helpTitle}>Help & Support</Text>
+                    <Text style={styles.helpSub}>Chat on WhatsApp with your profile details prefilled</Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.helpExpandBtn}
+                  activeOpacity={0.82}
+                  onPress={() => setBuyerHelpExpanded((curr) => !curr)}
+                >
+                  <Text style={styles.helpChevron}>{buyerHelpExpanded ? '−' : '+'}</Text>
+                </TouchableOpacity>
+              </View>
               {buyerHelpExpanded ? (
                 <View style={styles.helpBody}>
+                  <TouchableOpacity
+                    style={styles.helpActionBtn}
+                    activeOpacity={0.75}
+                    onPress={openSupportWhatsApp}
+                  >
+                    <Text style={styles.signOutText}>Chat on WhatsApp</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.helpActionBtn}
                     activeOpacity={0.75}
@@ -4377,6 +4829,90 @@ export default function App() {
           <BottomNav active="profile" onHomePress={goHome} onExplorePress={goExplore} onRequestPress={goRequest} onOrdersPress={goOrders} onProfilePress={goProfile} />
         </>
       ) : null}
+
+      <Modal visible={contactEditField !== null} transparent animationType="slide" onRequestClose={closeContactEdit}>
+        <TouchableOpacity style={locSt.backdrop} activeOpacity={1} onPress={closeContactEdit} />
+        <KeyboardAvoidingView
+          style={locSt.modalWrap}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+        >
+          <View style={locSt.sheet}>
+            <View style={locSt.handle} />
+            <Text style={locSt.title}>{contactEditField === 'phone' ? 'Update phone number' : 'Update email address'}</Text>
+            {contactEditField === 'phone' ? (
+              <>
+                <Text style={profileSt.editHint}>Enter your new 10-digit mobile number.</Text>
+                <TextInput
+                  style={locSt.fieldInput}
+                  placeholder="10-digit phone number"
+                  placeholderTextColor={C.warmGray}
+                  value={contactEditValue}
+                  onChangeText={(v) => setContactEditValue(v.replace(/[^0-9]/g, '').slice(0, 10))}
+                  keyboardType="number-pad"
+                  maxLength={10}
+                  autoFocus
+                />
+                <TouchableOpacity
+                  style={[locSt.saveBtn, contactEditBusy && { opacity: 0.6 }]}
+                  activeOpacity={0.85}
+                  disabled={contactEditBusy}
+                  onPress={savePhoneNumber}
+                >
+                  <Text style={locSt.saveBtnText}>{contactEditBusy ? 'Saving...' : 'Save phone number'}</Text>
+                </TouchableOpacity>
+              </>
+            ) : !contactOtpSent ? (
+              <>
+                <Text style={profileSt.editHint}>We'll email a 6-digit code to verify your new address.</Text>
+                <TextInput
+                  style={locSt.fieldInput}
+                  placeholder="Email address"
+                  placeholderTextColor={C.warmGray}
+                  value={contactEditValue}
+                  onChangeText={setContactEditValue}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoFocus
+                />
+                <TouchableOpacity
+                  style={[locSt.saveBtn, contactEditBusy && { opacity: 0.6 }]}
+                  activeOpacity={0.85}
+                  disabled={contactEditBusy}
+                  onPress={sendEmailUpdateOtp}
+                >
+                  <Text style={locSt.saveBtnText}>{contactEditBusy ? 'Sending...' : 'Send verification code'}</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={profileSt.editHint}>Enter the 6-digit code sent to {contactEditValue}.</Text>
+                <TextInput
+                  style={[locSt.fieldInput, profileSt.otpInput]}
+                  placeholder="6-digit code"
+                  placeholderTextColor={C.warmGray}
+                  value={contactEditOtp}
+                  onChangeText={(v) => setContactEditOtp(v.replace(/[^0-9]/g, '').slice(0, 6))}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  autoFocus
+                />
+                <TouchableOpacity
+                  style={[locSt.saveBtn, contactEditBusy && { opacity: 0.6 }]}
+                  activeOpacity={0.85}
+                  disabled={contactEditBusy}
+                  onPress={verifyEmailUpdateOtp}
+                >
+                  <Text style={locSt.saveBtnText}>{contactEditBusy ? 'Verifying...' : 'Verify & update email'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={profileSt.resendBtn} activeOpacity={0.7} disabled={contactEditBusy} onPress={sendEmailUpdateOtp}>
+                  <Text style={profileSt.resendText}>Resend code</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       <CounterModal
         visible={!!counterChef}
@@ -5890,35 +6426,6 @@ function Stepper({ value, unit, onMinus, onPlus }: { value: number; unit: string
   );
 }
 
-function StatBox({ num, label }: { num: string; label: string }) {
-  return (
-    <View style={profileSt.statBox}>
-      <Text style={profileSt.statNum}>{num}</Text>
-      <Text style={profileSt.statLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function MenuItem({ item }: { item: { icon: string; iconBg: string; label: string; sub: string; badge: string | null } }) {
-  return (
-    <TouchableOpacity style={styles.menuItem} activeOpacity={0.75}>
-      <View style={styles.menuLeft}>
-        <View style={[styles.menuIcon, { backgroundColor: item.iconBg }]}>
-          <Text style={styles.menuIconText}>{item.icon}</Text>
-        </View>
-        <View>
-          <Text style={styles.menuLabel}>{item.label}</Text>
-          <Text style={styles.menuSub}>{item.sub}</Text>
-        </View>
-      </View>
-      <View style={styles.menuRight}>
-        {item.badge ? <View style={styles.menuBadge}><Text style={styles.menuBadgeText}>{item.badge}</Text></View> : null}
-        <Text style={styles.menuArrow}>›</Text>
-      </View>
-    </TouchableOpacity>
-  );
-}
-
 function StarRating({ count }: { count: number }) {
   return <View style={styles.starRow}>{[1, 2, 3, 4, 5].map((i) => <Text key={i} style={[styles.star, { color: i <= count ? C.turmeric : C.border }]}>★</Text>)}</View>;
 }
@@ -6747,11 +7254,15 @@ const styles = StyleSheet.create({
   savedAddressesTitle: { fontSize: 12, fontWeight: '800', color: C.ink, paddingLeft: 2, marginTop: 6 },
   savedAddressesHint: { fontSize: 12, color: C.warmGray, lineHeight: 18, paddingHorizontal: 2, paddingTop: 4 },
   savedAddressCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 14, padding: 12 },
+  savedAddressCardSelected: { borderColor: C.mint, borderWidth: 1.5, backgroundColor: C.paleGreen },
   savedAddressIconWrap: { width: 36, height: 36, borderRadius: 12, backgroundColor: C.paleYellow, alignItems: 'center', justifyContent: 'center' },
+  savedAddressIconWrapSelected: { backgroundColor: C.white },
   savedAddressIcon: { fontSize: 17, color: C.ink },
   savedAddressCopy: { flex: 1 },
   savedAddressLabel: { fontSize: 13, fontWeight: '800', color: C.ink, marginBottom: 4 },
   savedAddressText: { fontSize: 12, lineHeight: 18, color: C.warmGray },
+  savedAddressActiveBadge: { backgroundColor: C.mint, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, alignSelf: 'flex-start' },
+  savedAddressActiveBadgeText: { fontSize: 9, fontWeight: '800', color: C.white, textTransform: 'uppercase', letterSpacing: 0.4 },
   menuLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
   menuIcon: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   menuIconText: { fontSize: 16 },
@@ -6768,7 +7279,9 @@ const styles = StyleSheet.create({
   chefBannerBtn: { backgroundColor: C.turmeric, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10 },
   chefBannerBtnText: { color: C.white, fontSize: 12, fontWeight: '700' },
   helpCard: { marginHorizontal: 18, marginTop: 20, borderRadius: 18, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.white, overflow: 'hidden' },
-  helpHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 16 },
+  helpHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 16, gap: 12 },
+  helpHeaderMain: { flex: 1 },
+  helpExpandBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FCFAF6', borderWidth: 1, borderColor: C.border },
   helpTitle: { fontSize: 15, fontWeight: '800', color: C.ink },
   helpSub: { marginTop: 3, fontSize: 12, color: C.warmGray },
   helpChevron: { fontSize: 24, lineHeight: 24, fontWeight: '500', color: C.spice, paddingHorizontal: 4 },
@@ -7079,15 +7592,25 @@ const profileSt = StyleSheet.create({
   avatar: { width: 68, height: 68, borderRadius: 34, backgroundColor: C.spice, alignItems: 'center', justifyContent: 'center', marginBottom: 12, shadowColor: C.spice, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 4 },
   avatarText: { color: C.white, fontWeight: '800', fontSize: 28 },
   name: { fontSize: 20, fontWeight: '800', color: C.ink, letterSpacing: -0.4 },
+  locationRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   location: { fontSize: 12, color: C.warmGray, marginTop: 4 },
+  updateLocationLink: { fontSize: 11, fontWeight: '700', color: C.mint, textDecorationLine: 'underline', marginTop: 4 },
   member: { fontSize: 11, color: '#B0A8A0', marginTop: 2, marginBottom: 14 },
   editBtn: { paddingHorizontal: 18, paddingVertical: 8, borderRadius: 20, backgroundColor: C.white, borderWidth: 1, borderColor: C.border },
   editBtnText: { fontSize: 12, fontWeight: '600', color: C.ink },
   statsRow: { flexDirection: 'row', backgroundColor: C.white, marginHorizontal: 18, marginTop: -16, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: C.border, shadowColor: C.ink, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2, marginBottom: 20 },
+  statBoxWrap: { flex: 1, flexDirection: 'row', alignItems: 'center' },
   statBox: { flex: 1, paddingVertical: 14, alignItems: 'center' },
   statNum: { fontSize: 17, fontWeight: '800', color: C.ink },
-  statLabel: { fontSize: 9, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4, color: C.warmGray, marginTop: 2 },
+  statLabel: { fontSize: 9, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4, color: C.warmGray, marginTop: 2, textAlign: 'center' },
   divider: { width: 1, height: '60%', backgroundColor: C.border, alignSelf: 'center' },
+  detailLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  editIconBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.paleGreen, alignItems: 'center', justifyContent: 'center' },
+  editIconText: { fontSize: 13, color: C.mint, fontWeight: '700' },
+  editHint: { fontSize: 12, color: C.warmGray, marginBottom: 12, lineHeight: 17 },
+  otpInput: { fontSize: 18, fontWeight: '700', letterSpacing: 6, textAlign: 'center' },
+  resendBtn: { alignItems: 'center', paddingVertical: 8 },
+  resendText: { fontSize: 12, fontWeight: '700', color: C.spice },
 });
 
 const feedSt = StyleSheet.create({

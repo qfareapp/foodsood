@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import * as jwt from 'jsonwebtoken';
+import { applyAccountDeletion, getDeletionReviewNeeds } from '../lib/accountDeletion';
 import { REPORT_STATUSES } from '../lib/moderation';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
@@ -47,6 +48,7 @@ const listQuerySchema = z.object({
   role: z.string().trim().max(20).optional(),
   status: z.string().trim().max(40).optional(),
 });
+const DELETION_REQUEST_STATUSES = ['PENDING', 'IN_REVIEW', 'COMPLETED', 'REJECTED'] as const;
 
 function parseJsonArray<T>(value?: string | null): T[] {
   if (!value) return [];
@@ -241,6 +243,93 @@ router.patch('/reports/:id', requireAdmin, async (req, res) => {
       ...(parsed.data.status === 'RESOLVED' || parsed.data.status === 'REJECTED'
         ? { resolvedAt: new Date(), resolvedBy: ADMIN_USERNAME }
         : {}),
+    },
+  });
+
+  res.json(updated);
+});
+
+router.get('/account-deletion-requests', requireAdmin, async (req, res) => {
+  const parsed = z.object({
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    status: z.enum(DELETION_REQUEST_STATUSES).optional(),
+    q: z.string().trim().max(120).optional(),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const where: Record<string, unknown> = {};
+  if (parsed.data.status) where.status = parsed.data.status;
+  if (parsed.data.q) {
+    where.OR = [
+      { fullName: { contains: parsed.data.q, mode: 'insensitive' } },
+      { contactEmail: { contains: parsed.data.q, mode: 'insensitive' } },
+      { contactPhone: { contains: parsed.data.q } },
+      { note: { contains: parsed.data.q, mode: 'insensitive' } },
+    ];
+  }
+
+  const requests = await prisma.accountDeletionRequest.findMany({
+    where,
+    orderBy: { requestedAt: 'desc' },
+    take: parsed.data.limit ?? 100,
+    include: {
+      user: { select: { id: true, name: true, phone: true, email: true, role: true, isActive: true, deletedAt: true } },
+    },
+  });
+
+  const requestsWithReview = await Promise.all(requests.map(async (request) => ({
+    ...request,
+    reviewNeeds: request.userId ? await getDeletionReviewNeeds(request.userId) : null,
+  })));
+
+  res.json(requestsWithReview);
+});
+
+router.patch('/account-deletion-requests/:id', requireAdmin, async (req, res) => {
+  const parsed = z.object({
+    status: z.enum(DELETION_REQUEST_STATUSES).optional(),
+    processDeletion: z.boolean().optional(),
+    note: z.string().trim().max(500).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const requestId = String(req.params.id);
+  const existing = await prisma.accountDeletionRequest.findUnique({
+    where: { id: requestId },
+    include: { user: { select: { id: true, deletedAt: true } } },
+  });
+  if (!existing) {
+    res.status(404).json({ error: 'Deletion request not found' });
+    return;
+  }
+
+  if (parsed.data.processDeletion) {
+    if (!existing.userId) {
+      res.status(409).json({ error: 'Cannot process a public request without a matched app account' });
+      return;
+    }
+    await applyAccountDeletion(existing.userId);
+  }
+
+  const finalStatus = parsed.data.processDeletion
+    ? 'COMPLETED'
+    : (parsed.data.status ?? existing.status);
+
+  const updated = await prisma.accountDeletionRequest.update({
+    where: { id: requestId },
+    data: {
+      status: finalStatus,
+      note: parsed.data.note !== undefined ? (parsed.data.note || null) : existing.note,
+      processedAt: finalStatus === 'COMPLETED' || finalStatus === 'REJECTED' ? new Date() : existing.processedAt,
+    },
+    include: {
+      user: { select: { id: true, name: true, phone: true, email: true, role: true, isActive: true, deletedAt: true } },
     },
   });
 

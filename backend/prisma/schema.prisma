@@ -28,6 +28,7 @@ model User {
   ratingCount  Int      @default(0)
   totalOrders  Int      @default(0)
   isActive         Boolean  @default(true)
+  deletedAt        DateTime?
   ugcPolicyAcceptedAt DateTime?
   kitchenImages    String?
   specialityDishes String?
@@ -146,8 +147,21 @@ model Order {
   paymentType String?
   advancePaid Int?
   holdUntil   DateTime?
+  paymentGateway String?
   paymentRef  String?
+  cashfreeOrderId String?
+  cashfreePaymentSessionId String?
+  cashfreePaymentId String?
+  cashfreeOrderStatus String?
+  paymentInitiatedAt DateTime?
+  paymentConfirmedAt DateTime?
   paidAt      DateTime?
+  cashfreeBalanceOrderId String?
+  cashfreeBalancePaymentSessionId String?
+  cashfreeBalancePaymentId String?
+  cashfreeBalanceOrderStatus String?
+  balancePaymentInitiatedAt DateTime?
+  balancePaymentConfirmedAt DateTime?
   balancePaidAt DateTime?
   balancePaymentRef String?
   cookingStartedAt DateTime?
@@ -228,8 +242,21 @@ model DishOffer {
   holdUntil    DateTime?
   deliveryMode String?
   orderStatus  String?
+  paymentGateway String?
   paymentRef   String?
+  cashfreeOrderId String?
+  cashfreePaymentSessionId String?
+  cashfreePaymentId String?
+  cashfreeOrderStatus String?
+  paymentInitiatedAt DateTime?
+  paymentConfirmedAt DateTime?
   paidAt       DateTime?
+  cashfreeBalanceOrderId String?
+  cashfreeBalancePaymentSessionId String?
+  cashfreeBalancePaymentId String?
+  cashfreeBalanceOrderStatus String?
+  balancePaymentInitiatedAt DateTime?
+  balancePaymentConfirmedAt DateTime?
   balancePaidAt DateTime?
   balancePaymentRef String?
   reviewRating Int?

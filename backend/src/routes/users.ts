@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { applyAccountDeletion, getDeletionReviewNeeds } from '../lib/accountDeletion';
 import { getBlockedUserIds } from '../lib/moderation';
 import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth';
 import prisma from '../lib/prisma';
 import { uploadBase64Image } from '../lib/cloudinary';
+import { sendOtpEmail } from '../lib/email';
 
 const router = Router();
 
@@ -62,6 +64,35 @@ const updateMeSchema = z.object({
   role: z.enum(['BUYER', 'CHEF', 'BOTH']).optional(),
   kitchenImages: z.array(z.string().url()).max(5).optional(),
   specialityDishes: z.array(specialityDishSchema).max(30).optional(),
+});
+
+const ME_SELECT = {
+  id: true, name: true, phone: true, email: true, role: true,
+  avatar: true, coverImage: true, bio: true, cookingStyle: true, location: true,
+  city: true, lat: true, lng: true,
+  rating: true, ratingCount: true, totalOrders: true,
+  isActive: true, ugcPolicyAcceptedAt: true, kitchenImages: true, specialityDishes: true, createdAt: true, updatedAt: true,
+} as const;
+
+function serializeUser(user: { kitchenImages: string | null; specialityDishes: string | null } & Record<string, unknown>) {
+  return {
+    ...user,
+    kitchenImages: user.kitchenImages ? JSON.parse(user.kitchenImages) as string[] : [],
+    specialityDishes: user.specialityDishes ? JSON.parse(user.specialityDishes) : [],
+  };
+}
+
+const updatePhoneSchema = z.object({
+  phone: z.string().regex(/^\d{10}$/, 'Phone must be exactly 10 digits'),
+});
+
+const sendEmailOtpSchema = z.object({
+  email: z.string().trim().email(),
+});
+
+const verifyEmailOtpSchema = z.object({
+  email: z.string().trim().email(),
+  otp: z.string().length(6),
 });
 
 const addressSchema = z.object({
@@ -173,6 +204,9 @@ router.post('/me/delete-request', requireAuth, async (req: AuthRequest, res) => 
     select: { id: true },
   });
 
+  const reviewNeeds = await getDeletionReviewNeeds(currentUser.id);
+  const nextStatus = reviewNeeds.needsReview ? 'IN_REVIEW' : 'PENDING';
+
   if (!existing) {
     await prisma.accountDeletionRequest.create({
       data: {
@@ -182,7 +216,7 @@ router.post('/me/delete-request', requireAuth, async (req: AuthRequest, res) => 
         contactPhone: currentUser.phone,
         note: parsed.data.note || null,
         source: 'APP',
-        status: 'PENDING',
+        status: nextStatus,
       },
     });
   }
@@ -194,7 +228,16 @@ router.post('/me/delete-request', requireAuth, async (req: AuthRequest, res) => 
   await prisma.refreshToken.deleteMany({ where: { userId: currentUser.id } });
   await prisma.fcmToken.deleteMany({ where: { userId: currentUser.id } });
 
-  res.json({ success: true, status: existing ? 'already_requested' : 'requested' });
+  if (!reviewNeeds.needsReview) {
+    await applyAccountDeletion(currentUser.id);
+    res.json({ success: true, status: 'completed' });
+    return;
+  }
+
+  res.json({
+    success: true,
+    status: existing ? 'already_requested' : reviewNeeds.needsReview ? 'in_review' : 'requested',
+  });
 });
 
 router.post('/me/kitchen-image', requireAuth, async (req: AuthRequest, res) => {
@@ -263,6 +306,103 @@ router.put('/me', requireAuth, async (req: AuthRequest, res) => {
   });
 });
 
+// ── PATCH /api/users/me/phone ───────────────────────────────────────────────
+router.patch('/me/phone', requireAuth, async (req: AuthRequest, res) => {
+  const parsed = updatePhoneSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  const conflict = await prisma.user.findFirst({
+    where: { phone: parsed.data.phone, NOT: { id: req.user!.userId } },
+    select: { id: true },
+  });
+  if (conflict) {
+    res.status(409).json({ error: 'Phone number already in use' });
+    return;
+  }
+
+  const user = await prisma.user.update({
+    where: { id: req.user!.userId },
+    data: { phone: parsed.data.phone },
+    select: ME_SELECT,
+  });
+  res.json(serializeUser(user));
+});
+
+// ── POST /api/users/me/email/send-otp ───────────────────────────────────────
+router.post('/me/email/send-otp', requireAuth, async (req: AuthRequest, res) => {
+  const parsed = sendEmailOtpSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid email required' });
+    return;
+  }
+
+  const email = parsed.data.email.toLowerCase();
+  const conflict = await prisma.user.findFirst({
+    where: { email, NOT: { id: req.user!.userId } },
+    select: { id: true },
+  });
+  if (conflict) {
+    res.status(409).json({ error: 'Email already in use' });
+    return;
+  }
+
+  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+  await prisma.emailOtp.updateMany({ where: { email, used: false }, data: { used: true } });
+  await prisma.emailOtp.create({ data: { email, otp, expiresAt } });
+
+  try {
+    await sendOtpEmail(email, otp);
+  } catch (err) {
+    console.error('Failed to send OTP email:', err);
+    res.status(502).json({ error: 'Failed to send verification email. Please try again.' });
+    return;
+  }
+
+  res.json({ sent: true });
+});
+
+// ── POST /api/users/me/email/verify-otp ─────────────────────────────────────
+router.post('/me/email/verify-otp', requireAuth, async (req: AuthRequest, res) => {
+  const parsed = verifyEmailOtpSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Email and 6-digit OTP required' });
+    return;
+  }
+
+  const email = parsed.data.email.toLowerCase();
+  const record = await prisma.emailOtp.findFirst({
+    where: { email, otp: parsed.data.otp, used: false, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!record) {
+    res.status(401).json({ error: 'Invalid or expired code. Please try again.' });
+    return;
+  }
+
+  const conflict = await prisma.user.findFirst({
+    where: { email, NOT: { id: req.user!.userId } },
+    select: { id: true },
+  });
+  if (conflict) {
+    res.status(409).json({ error: 'Email already in use' });
+    return;
+  }
+
+  await prisma.emailOtp.update({ where: { id: record.id }, data: { used: true } });
+
+  const user = await prisma.user.update({
+    where: { id: req.user!.userId },
+    data: { email },
+    select: ME_SELECT,
+  });
+  res.json(serializeUser(user));
+});
+
 // ── GET /api/users/dish-suggestions ───────────────────────────────────────
 router.get('/dish-suggestions', async (req, res) => {
   const parsed = dishSuggestionsQuerySchema.safeParse(req.query);
@@ -277,6 +417,7 @@ router.get('/dish-suggestions', async (req, res) => {
   const chefs = await prisma.user.findMany({
     where: {
       role: { in: ['CHEF', 'BOTH'] },
+      isActive: true,
       specialityDishes: { not: null },
     },
     select: { specialityDishes: true },
@@ -333,8 +474,8 @@ router.get('/:id', optionalAuth, async (req: AuthRequest, res) => {
       return;
     }
   }
-  const user = await prisma.user.findUnique({
-    where: { id: profileUserId },
+  const user = await prisma.user.findFirst({
+    where: { id: profileUserId, isActive: true },
     select: {
       ...PUBLIC_CHEF_SELECT,
       kitchenImages: true,

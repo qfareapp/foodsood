@@ -10,7 +10,7 @@ import { Platform } from 'react-native';
 const LOCAL_API_BASE =
   Platform.OS === 'web'
     ? 'http://localhost:3000/api'
-    : 'http://192.168.16.22:3000/api';
+    : 'http://192.168.15.138:3000/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 export const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 

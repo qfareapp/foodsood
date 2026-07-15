@@ -10,6 +10,7 @@ import marketPriceRoutes from './routes/marketPrices';
 import moderationRoutes from './routes/moderation';
 import offerRoutes from './routes/offers';
 import orderRoutes from './routes/orders';
+import paymentRoutes from './routes/payments';
 import quoteRoutes from './routes/quotes';
 import requestRoutes from './routes/requests';
 import userRoutes from './routes/users';
@@ -21,6 +22,7 @@ const PORT = process.env.PORT ?? 3000;
 const HOST = process.env.HOST ?? '0.0.0.0';
 
 app.use(cors());
+app.use('/api/payments/cashfree/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -33,6 +35,7 @@ app.use('/api/requests', requestRoutes);
 app.use('/api/quotes', quoteRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/offers', offerRoutes);
+app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 
 const adminDir = path.join(__dirname, '../../admin');

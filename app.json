@@ -3,6 +3,7 @@
     "name": "FoodSood",
     "slug": "foodsood",
     "version": "1.0.0",
+    "scheme": "foodsood",
     "orientation": "portrait",
     "icon": "./assets/buyer-icon.png",
     "userInterfaceStyle": "light",
@@ -12,7 +13,15 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": [
+          "phonepe",
+          "tez",
+          "paytm",
+          "bhim"
+        ]
+      }
     },
     "android": {
       "package": "com.mepranjal.foodsood",

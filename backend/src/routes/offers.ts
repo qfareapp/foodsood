@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { createCashfreeOrder, generateCashfreeOrderId, isCashfreeReady } from '../lib/cashfree';
 import prisma from '../lib/prisma';
 import { AuthRequest, requireAuth } from '../middleware/auth';
 
@@ -80,6 +81,18 @@ async function getReservedPlates(dishId: string) {
 
 function holdExpiry() {
   return new Date(Date.now() + HOLD_MINUTES * 60 * 1000);
+}
+
+function getOfferCustomer(input: {
+  buyerToken: string;
+  buyerName: string;
+}) {
+  return {
+    customerId: input.buyerToken,
+    customerName: input.buyerName.trim().slice(0, 100) || 'Foodsood Buyer',
+    customerEmail: undefined,
+    customerPhone: '9999999999',
+  };
 }
 
 type SpecialityDishReview = {
@@ -324,6 +337,78 @@ router.post('/:id/pay', async (req, res) => {
   res.json(updated);
 });
 
+router.post('/:id/cashfree/session', async (req, res) => {
+  await expireHeldOffers();
+  if (!isCashfreeReady()) {
+    res.status(503).json({ error: 'Cashfree is not configured on the server' });
+    return;
+  }
+
+  const offerId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const parsed = paySchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
+
+  const offer = await prisma.dishOffer.findUnique({ where: { id: offerId } });
+  if (!offer) { res.status(404).json({ error: 'Offer not found' }); return; }
+  if (offer.buyerToken !== parsed.data.buyerToken) { res.status(403).json({ error: 'Forbidden' }); return; }
+  if (offer.status !== 'HOLD') { res.status(409).json({ error: 'Offer is not awaiting payment' }); return; }
+  if (!offer.holdUntil || offer.holdUntil.getTime() <= Date.now()) {
+    await prisma.dishOffer.update({ where: { id: offer.id }, data: { status: 'EXPIRED' } });
+    res.status(409).json({ error: 'Payment window expired' });
+    return;
+  }
+
+  const baseTotal = (offer.agreedPrice ?? offer.offerPrice) * offer.plates;
+  const pickupDiscount = parsed.data.deliveryMode === 'pickup' ? Math.min(Math.round(baseTotal * 0.05), 30) : 0;
+  const finalTotal = baseTotal - pickupDiscount;
+  const isAdvance = parsed.data.paymentType === 'advance';
+  const payableAmount = isAdvance ? Math.ceil(finalTotal * 0.2) : finalTotal;
+  const cashfreeOrderId = generateCashfreeOrderId('OFFER', offer.id, 'initial');
+
+  try {
+    const cfOrder = await createCashfreeOrder({
+      cashfreeOrderId,
+      amount: payableAmount,
+      customer: getOfferCustomer(offer),
+      note: `${offer.dishName} direct order payment`,
+      expiresAt: offer.holdUntil,
+      tags: {
+        entityType: 'OFFER',
+        entityId: offer.id,
+        paymentStage: 'initial',
+        paymentType: parsed.data.paymentType,
+      },
+    });
+
+    const advancePaid = isAdvance ? payableAmount : null;
+    await prisma.dishOffer.update({
+      where: { id: offer.id },
+      data: {
+        paymentGateway: 'CASHFREE',
+        deliveryMode: parsed.data.deliveryMode,
+        paymentType: isAdvance ? 'ADVANCE' : 'FULL',
+        advancePaid,
+        agreedPrice: offer.agreedPrice ?? offer.offerPrice,
+        cashfreeOrderId,
+        cashfreePaymentSessionId: cfOrder.payment_session_id,
+        cashfreeOrderStatus: cfOrder.order_status,
+        paymentInitiatedAt: new Date(),
+      },
+    });
+
+    res.json({
+      gateway: 'CASHFREE',
+      cashfreeOrderId,
+      paymentSessionId: cfOrder.payment_session_id,
+      environment: process.env.CASHFREE_ENV?.trim().toUpperCase() === 'PRODUCTION' ? 'PRODUCTION' : 'SANDBOX',
+      amount: payableAmount,
+      paymentType: parsed.data.paymentType,
+    });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree payment session' });
+  }
+});
+
 router.post('/:id/pay-balance', async (req, res) => {
   await expireHeldOffers();
 
@@ -348,6 +433,70 @@ router.post('/:id/pay-balance', async (req, res) => {
   });
 
   res.json(updated);
+});
+
+router.post('/:id/cashfree/balance-session', async (req, res) => {
+  await expireHeldOffers();
+  if (!isCashfreeReady()) {
+    res.status(503).json({ error: 'Cashfree is not configured on the server' });
+    return;
+  }
+
+  const offerId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const schema = z.object({ buyerToken: z.string().uuid() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
+
+  const offer = await prisma.dishOffer.findUnique({ where: { id: offerId } });
+  if (!offer) { res.status(404).json({ error: 'Offer not found' }); return; }
+  if (offer.buyerToken !== parsed.data.buyerToken) { res.status(403).json({ error: 'Forbidden' }); return; }
+  if (offer.status !== 'ADVANCE_PAID') { res.status(409).json({ error: 'Balance payment only applies to advance-paid orders' }); return; }
+
+  const fullTotal = (offer.agreedPrice ?? offer.offerPrice) * offer.plates;
+  const pickupDiscount = offer.deliveryMode === 'pickup' ? Math.min(Math.round(fullTotal * 0.05), 30) : 0;
+  const payableAmount = fullTotal - pickupDiscount - (offer.advancePaid ?? 0);
+  if (payableAmount <= 0) {
+    res.status(409).json({ error: 'No balance due for this order' });
+    return;
+  }
+
+  const cashfreeOrderId = generateCashfreeOrderId('OFFER', offer.id, 'balance');
+  try {
+    const cfOrder = await createCashfreeOrder({
+      cashfreeOrderId,
+      amount: payableAmount,
+      customer: getOfferCustomer(offer),
+      note: `${offer.dishName} balance payment`,
+      tags: {
+        entityType: 'OFFER',
+        entityId: offer.id,
+        paymentStage: 'balance',
+        paymentType: 'balance',
+      },
+    });
+
+    await prisma.dishOffer.update({
+      where: { id: offer.id },
+      data: {
+        paymentGateway: 'CASHFREE',
+        cashfreeBalanceOrderId: cashfreeOrderId,
+        cashfreeBalancePaymentSessionId: cfOrder.payment_session_id,
+        cashfreeBalanceOrderStatus: cfOrder.order_status,
+        balancePaymentInitiatedAt: new Date(),
+      },
+    });
+
+    res.json({
+      gateway: 'CASHFREE',
+      cashfreeOrderId,
+      paymentSessionId: cfOrder.payment_session_id,
+      environment: process.env.CASHFREE_ENV?.trim().toUpperCase() === 'PRODUCTION' ? 'PRODUCTION' : 'SANDBOX',
+      amount: payableAmount,
+      paymentType: 'balance',
+    });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree balance payment session' });
+  }
 });
 
 router.patch('/:id/order-status', requireAuth, async (req: AuthRequest, res) => {
