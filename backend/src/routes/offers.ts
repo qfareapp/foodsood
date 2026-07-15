@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { createCashfreeOrder, generateCashfreeOrderId, isCashfreeReady } from '../lib/cashfree';
+import { createCashfreeOrder, generateCashfreeOrderId, getCashfreeErrorMessage, isCashfreeReady } from '../lib/cashfree';
 import prisma from '../lib/prisma';
 import { AuthRequest, requireAuth } from '../middleware/auth';
 
@@ -405,7 +405,9 @@ router.post('/:id/cashfree/session', async (req, res) => {
       paymentType: parsed.data.paymentType,
     });
   } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree payment session' });
+    const message = getCashfreeErrorMessage(error);
+    console.error('Cashfree offer session failed:', message, { offerId, paymentType: parsed.data.paymentType });
+    res.status(502).json({ error: message });
   }
 });
 
@@ -495,7 +497,9 @@ router.post('/:id/cashfree/balance-session', async (req, res) => {
       paymentType: 'balance',
     });
   } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree balance payment session' });
+    const message = getCashfreeErrorMessage(error);
+    console.error('Cashfree offer balance session failed:', message, { offerId });
+    res.status(502).json({ error: message });
   }
 });
 

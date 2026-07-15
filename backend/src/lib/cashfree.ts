@@ -5,6 +5,7 @@ import {
   PaymentEntityPaymentStatusEnum,
   type PaymentWebhook,
 } from 'cashfree-pg';
+import type { AxiosError } from 'axios';
 
 type CashfreeEnvironment = 'SANDBOX' | 'PRODUCTION';
 type PaymentStage = 'initial' | 'balance';
@@ -84,6 +85,18 @@ export async function createCashfreeOrder(input: CreateCashfreeOrderInput) {
 
   const response = await getClient().PGCreateOrder(request);
   return response.data;
+}
+
+export function getCashfreeErrorMessage(error: unknown): string {
+  const axiosError = error as AxiosError<{ message?: string; code?: string; type?: string }>;
+  const status = axiosError.response?.status;
+  const data = axiosError.response?.data;
+  if (data?.message || data?.code || data?.type) {
+    const parts = [data.message, data.code, data.type].filter(Boolean);
+    return status ? `Cashfree error ${status}: ${parts.join(' | ')}` : `Cashfree error: ${parts.join(' | ')}`;
+  }
+  if (error instanceof Error) return error.message;
+  return 'Cashfree request failed';
 }
 
 export async function fetchCashfreeOrder(cashfreeOrderId: string) {

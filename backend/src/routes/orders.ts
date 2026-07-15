@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { createCashfreeOrder, generateCashfreeOrderId, isCashfreeReady } from '../lib/cashfree';
+import { createCashfreeOrder, generateCashfreeOrderId, getCashfreeErrorMessage, isCashfreeReady } from '../lib/cashfree';
 import prisma from '../lib/prisma';
 import { assertNotBlocked } from '../lib/moderation';
 import { AuthRequest, requireAuth } from '../middleware/auth';
@@ -57,11 +57,17 @@ function getBuyerCashfreeCustomer(input: {
   email?: string | null;
   phone: string;
 }) {
+  const normalizedPhone = input.phone.replace(/\D/g, '').slice(-10);
+  const normalizedEmail = input.email?.trim().toLowerCase();
+  const safeEmail = normalizedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) && !normalizedEmail.endsWith('.local')
+    ? normalizedEmail
+    : undefined;
+
   return {
     customerId: input.id,
     customerName: input.name.trim().slice(0, 100) || 'Foodsood Buyer',
-    customerEmail: input.email?.trim().toLowerCase() || undefined,
-    customerPhone: input.phone.trim(),
+    customerEmail: safeEmail,
+    customerPhone: normalizedPhone || '9999999999',
   };
 }
 
@@ -426,7 +432,9 @@ router.post('/:id/cashfree/session', requireAuth, async (req: AuthRequest, res) 
       paymentType: parsed.data.paymentType,
     });
   } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree payment session' });
+    const message = getCashfreeErrorMessage(error);
+    console.error('Cashfree order session failed:', message, { orderId, buyerId: order.buyerId, paymentType: parsed.data.paymentType });
+    res.status(502).json({ error: message });
   }
 });
 
@@ -554,7 +562,9 @@ router.post('/:id/cashfree/balance-session', requireAuth, async (req: AuthReques
       paymentType: 'balance',
     });
   } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : 'Could not create Cashfree balance payment session' });
+    const message = getCashfreeErrorMessage(error);
+    console.error('Cashfree balance session failed:', message, { orderId, buyerId: order.buyerId });
+    res.status(502).json({ error: message });
   }
 });
 
