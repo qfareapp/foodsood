@@ -2,6 +2,7 @@
   "expo": {
     "name": "FoodSood",
     "slug": "foodsood",
+    "owner": "qfareindias-organization",
     "version": "1.0.0",
     "scheme": "foodsood",
     "orientation": "portrait",
@@ -38,7 +39,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "3ae1c72f-6d18-4ef4-a52a-c8f77f5e193b"
+        "projectId": "844e8b1a-c2bd-4ccf-8755-75714e6f2390"
       }
     }
   }
