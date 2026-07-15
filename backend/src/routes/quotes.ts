@@ -6,7 +6,7 @@ import { expireStaleRequests } from '../lib/requestExpiry';
 import { AuthRequest, requireAuth } from '../middleware/auth';
 
 const router = Router();
-const HOLD_MINUTES = 10;
+const HOLD_MINUTES = 20;
 const MAX_CHEF_QUOTES = 2;
 const MAX_BUYER_QUOTES = 2;
 const MAX_BUYER_COUNTERS = MAX_BUYER_QUOTES - 1;

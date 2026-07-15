@@ -5,7 +5,7 @@ import prisma from '../lib/prisma';
 import { AuthRequest, requireAuth } from '../middleware/auth';
 
 const router = Router();
-const HOLD_MINUTES = 10;
+const HOLD_MINUTES = 20;
 
 const OFFER_STATUSES = ['PENDING', 'COUNTERED', 'HOLD', 'ADVANCE_PAID', 'PAID', 'REJECTED', 'EXPIRED'] as const;
 type OfferStatus = typeof OFFER_STATUSES[number];

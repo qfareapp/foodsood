@@ -6,7 +6,7 @@ import { assertNotBlocked } from '../lib/moderation';
 import { AuthRequest, requireAuth } from '../middleware/auth';
 
 const router = Router();
-const HOLD_MINUTES = 10;
+const HOLD_MINUTES = 20;
 
 const ORDER_STATUSES = [
   'CONFIRMED', 'COOKING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED',
