@@ -9,8 +9,8 @@ import { Platform } from 'react-native';
  */
 const LOCAL_API_BASE =
   Platform.OS === 'web'
-    ? 'http://localhost:3000/api'
-    : 'http://192.168.15.138:3000/api';
+    ? 'http://localhost:3001/api'
+    : 'http://192.168.16.24:3001/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 export const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 
@@ -83,8 +83,12 @@ async function apiRequest(path: string, options: RequestInit = {}, token?: strin
 // ── Core fetch wrapper ────────────────────────────────────────────────────
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   let token = await Tokens.getAccess();
+  if (!token) {
+    const refreshed = await refreshChefAccessToken();
+    if (refreshed) token = refreshed;
+  }
   let res = await apiRequest(path, options, token);
-  if (res.status === 401 && token) {
+  if (res.status === 401) {
     const refreshed = await refreshChefAccessToken();
     if (refreshed) {
       token = refreshed;
@@ -195,7 +199,7 @@ export const Cooking = {
   create: (body: CreateCookingDishPayload) =>
     api<CookingDishItem>('/cooking', { method: 'POST', body: JSON.stringify(body) }),
   remove: (id: string) => api<void>(`/cooking/${id}`, { method: 'DELETE' }),
-  update: (id: string, body: { extensionMinutes?: number; imageUrl?: string | null }) =>
+  update: (id: string, body: { extensionMinutes?: number; imageUrl?: string | null; plates?: number }) =>
     api<CookingDishItem>(`/cooking/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 };
 
@@ -244,7 +248,7 @@ export const Offers = {
       method: 'PATCH',
       body: JSON.stringify({ counterPrice, counterNote }),
     }),
-  updateOrderStatus: (id: string, status: 'CONFIRMED' | 'OUT_FOR_DELIVERY' | 'DELIVERED') =>
+  updateOrderStatus: (id: string, status: 'COOKING' | 'READY' | 'OUT_FOR_DELIVERY' | 'DELIVERED') =>
     api<DishOffer>(`/offers/${id}/order-status`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
@@ -464,11 +468,15 @@ export interface DishOffer {
   agreedPrice?: number | null;
   holdUntil?: string | null;
   deliveryMode?: 'pickup' | 'delivery' | null;
-  orderStatus?: 'CONFIRMED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | null;
+  orderStatus?: 'CONFIRMED' | 'COOKING' | 'READY' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | null;
+  paymentType?: 'FULL' | 'ADVANCE' | null;
+  advancePaid?: number | null;
   paymentRef?: string | null;
   paidAt?: string | null;
   message?: string;
-  status: 'PENDING' | 'COUNTERED' | 'HOLD' | 'PAID' | 'REJECTED' | 'EXPIRED';
+  status: 'PENDING' | 'COUNTERED' | 'HOLD' | 'ADVANCE_PAID' | 'PAID' | 'REJECTED' | 'EXPIRED';
+  chefCounterCount?: number;
+  buyerCounterCount?: number;
   counterPrice?: number | null;
   counterNote?: string | null;
   lastOfferBy: 'BUYER' | 'CHEF';
@@ -494,6 +502,11 @@ export interface OrderItem {
   chefId: string;
   finalPrice: number;
   status: OrderStatus;
+  paymentStatus?: 'HOLD' | 'ADVANCE_PAID' | 'PAID' | 'EXPIRED';
+  paymentType?: 'FULL' | 'ADVANCE' | null;
+  advancePaid?: number | null;
+  paymentRef?: string | null;
+  paidAt?: string | null;
   address?: string;
   cookingStartedAt?: string | null;
   readyAt?: string | null;

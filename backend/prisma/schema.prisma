@@ -100,6 +100,7 @@ model ChefDish {
   readyInMinutes Int
   notes          String?
   imageUrl       String?
+  restockedAt    DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
@@ -236,6 +237,8 @@ model DishOffer {
   status       String   @default("PENDING")  // PENDING | COUNTERED | HOLD | ADVANCE_PAID | PAID | REJECTED | EXPIRED
   paymentType  String?  // "FULL" | "ADVANCE"
   advancePaid  Int?
+  chefCounterCount Int @default(0)
+  buyerCounterCount Int @default(0)
   counterPrice Int?     // chef's counter price per plate
   counterNote  String?
   agreedPrice  Int?

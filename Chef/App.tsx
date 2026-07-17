@@ -14,6 +14,7 @@ import {
   Image,
   Linking,
   Modal,
+  PanResponder,
   Platform,
   RefreshControl,
   ScrollView,
@@ -163,31 +164,71 @@ const C = {
 // ── Status helpers ────────────────────────────────────────────────────────
 const ORDER_STATUS_META: Record<string, { label: string; color: string; bg: string; next?: OrderStatus; nextLabel?: string }> = {
   CONFIRMED:        { label: 'Confirmed',       color: '#4F6CF5', bg: C.paleBlue,   next: 'COOKING',          nextLabel: '👨‍🍳 Start Cooking' },
-  COOKING:          { label: 'Cooking',          color: C.turmeric, bg: C.paleYellow, next: 'READY',           nextLabel: '✅ Mark as Ready' },
-  READY:            { label: 'Ready',            color: C.mint,   bg: C.paleGreen,  next: 'OUT_FOR_DELIVERY', nextLabel: '🛵 Out for Delivery' },
+  COOKING:          { label: 'Cooking',          color: C.turmeric, bg: C.paleYellow, next: 'READY',           nextLabel: '📦 Mark as Packed' },
+  READY:            { label: 'Packed',           color: C.mint,   bg: C.paleGreen,  next: 'OUT_FOR_DELIVERY', nextLabel: '🛵 Out for Delivery' },
   OUT_FOR_DELIVERY: { label: 'Out for Delivery', color: C.spice,  bg: C.blush,      next: 'DELIVERED',        nextLabel: '📦 Mark Delivered' },
   DELIVERED:        { label: 'Delivered',        color: C.mint,   bg: C.paleGreen },
   CANCELLED:        { label: 'Cancelled',        color: C.red,    bg: C.paleRed },
 };
+// Swipe-track copy for each forward transition (keyed by the *target* status)
+const SWIPE_ACTION_LABEL: Partial<Record<OrderStatus, string>> = {
+  COOKING:          'Slide to start cooking',
+  READY:            'Slide to mark as packed',
+  OUT_FOR_DELIVERY: 'Slide for out for delivery',
+  DELIVERED:        'Slide to mark delivered',
+};
 const MAX_REQUEST_QUOTES_PER_SIDE = 2;
+const AWAITING_PAYMENT_COLOR = '#B07800';
+const PAYMENT_AWAITING_META = {
+  label: 'Awaiting Payment',
+  color: AWAITING_PAYMENT_COLOR,
+  bg: C.paleYellow,
+} as const;
+const PAYMENT_EXPIRED_META = {
+  label: 'Payment Expired',
+  color: C.red,
+  bg: C.paleRed,
+} as const;
 
 const SPICE_LABEL: Record<string, string> = { mild: '🌿 Mild', medium: '🌶 Medium', extra: '🔥 Extra' };
 const DELIVERY_LABEL: Record<string, string> = { pickup: '🚶 Pickup', delivery: '🛵 Delivery', both: 'Both' };
 
-function getPaidOfferOrderStatus(offer: DishOffer): 'CONFIRMED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' {
-  if (offer.orderStatus === 'OUT_FOR_DELIVERY' || offer.orderStatus === 'DELIVERED') return offer.orderStatus;
-  return 'CONFIRMED';
+function hasBuyerPaidForOrder(order: OrderItem): boolean {
+  return order.paymentStatus === 'ADVANCE_PAID' || order.paymentStatus === 'PAID';
 }
 
-function getPaidOfferAction(offer: DishOffer): { next: 'OUT_FOR_DELIVERY' | 'DELIVERED'; label: string } | null {
-  const status = getPaidOfferOrderStatus(offer);
-  if (status === 'DELIVERED') return null;
-  if (offer.deliveryMode === 'delivery') {
-    return status === 'CONFIRMED'
-      ? { next: 'OUT_FOR_DELIVERY', label: '🛵 Dispatched' }
-      : { next: 'DELIVERED', label: '📦 Delivered' };
+function getChefOrderMeta(order: OrderItem) {
+  if (order.paymentStatus === 'HOLD') {
+    return {
+      ...PAYMENT_AWAITING_META,
+      nextLabel: 'Offer accepted · Awaiting buyer payment',
+    };
   }
-  return { next: 'DELIVERED', label: '✅ Delivered' };
+  if (order.paymentStatus === 'EXPIRED') {
+    return {
+      ...PAYMENT_EXPIRED_META,
+      nextLabel: 'Payment window expired',
+    };
+  }
+  if (order.request.delivery === 'pickup' && order.status === 'READY') {
+    return { ...ORDER_STATUS_META.READY, next: 'DELIVERED' as OrderStatus, nextLabel: '📦 Mark Delivered' };
+  }
+  return ORDER_STATUS_META[order.status];
+}
+
+function getPaidOfferOrderStatus(offer: DishOffer): OrderStatus {
+  return (offer.orderStatus as OrderStatus | undefined) ?? 'CONFIRMED';
+}
+
+// Same shape as the meta used for formal orders — reuses ORDER_STATUS_META so
+// dish-offer orders (live-board buys) get the identical Cooking→Packed→Out for
+// Delivery→Delivered pipeline, with the pickup shortcut (skip OUT_FOR_DELIVERY).
+function getPaidOfferMeta(offer: DishOffer) {
+  const status = getPaidOfferOrderStatus(offer);
+  if (offer.deliveryMode !== 'delivery' && status === 'READY') {
+    return { ...ORDER_STATUS_META.READY, next: 'DELIVERED' as OrderStatus, nextLabel: '📦 Mark Delivered' };
+  }
+  return ORDER_STATUS_META[status];
 }
 
 const DEFAULT_LOCATION = 'Set your location';
@@ -355,13 +396,14 @@ type Screen =
   | 'today-menu'
   | 'orders'
   | 'order-detail'
+  | 'offer-detail'
   | 'earnings'
   | 'profile';
 
 type RootTab = 'home' | 'today-menu' | 'profile';
 
 type TodayDish = CookingDishItem;
-type PaidDishOffer = DishOffer & { status: 'PAID' };
+type PaidDishOffer = DishOffer & { status: 'PAID' | 'ADVANCE_PAID' };
 
 // ─────────────────────────────────────────────────────────────────────────
 //  ROOT APP
@@ -394,6 +436,7 @@ export default function App() {
   // selected item IDs for detail screens
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [activeOrderId, setActiveOrderId]     = useState<string | null>(null);
+  const [activeOfferId, setActiveOfferId]     = useState<string | null>(null);
 
   // data
   const [requests, setRequests]   = useState<RequestItem[]>([]);
@@ -629,7 +672,7 @@ export default function App() {
       const [reqs, ords, offrs] = await Promise.allSettled([
         loadRequestBoardData(coordsOverride),
         Orders.list(),
-        Offers.list(['PENDING', 'COUNTERED', 'HOLD', 'PAID']),
+        Offers.list(['PENDING', 'COUNTERED', 'HOLD', 'ADVANCE_PAID', 'PAID']),
       ]);
       if (seq !== homeLoadSeqRef.current) return;
       if (reqs.status === 'fulfilled') {
@@ -791,6 +834,7 @@ export default function App() {
 
   const goRequestDetail = (id: string) => { setActiveRequestId(id); setScreen('request-detail'); };
   const goOrderDetail   = (id: string) => { setActiveOrderId(id);   setScreen('order-detail'); };
+  const goOfferDetail   = (id: string) => { setActiveOfferId(id);   setScreen('offer-detail'); };
 
   const toggleAvailability = async (val: boolean) => {
     setIsAvailable(val);
@@ -955,7 +999,7 @@ export default function App() {
 
   // ── Active & past orders ─────────────────────────────────────────────
   const activeOrders = orders.filter((o) => !['DELIVERED', 'CANCELLED'].includes(o.status));
-  const acceptedDishOffers = dishOffers.filter((offer): offer is PaidDishOffer => offer.status === 'PAID');
+  const acceptedDishOffers = dishOffers.filter((offer): offer is PaidDishOffer => offer.status === 'PAID' || offer.status === 'ADVANCE_PAID');
   const totalPaidOfferEarnings = acceptedDishOffers.reduce((sum, offer) => sum + ((offer.agreedPrice ?? offer.offerPrice) * offer.plates), 0);
   const showRootNav = screen === 'home' || screen === 'today-menu' || screen === 'profile';
   const activeRootTab: RootTab = screen === 'today-menu' || screen === 'profile' ? screen : 'home';
@@ -992,6 +1036,7 @@ export default function App() {
           onRefresh={onRefresh}
           onRequestPress={goRequestDetail}
           onOrderPress={goOrderDetail}
+          onOfferPress={goOfferDetail}
           onViewAllOrders={() => setScreen('orders')}
           onViewEarnings={() => setScreen('earnings')}
           onViewProfile={() => setScreen('profile')}
@@ -1026,6 +1071,7 @@ export default function App() {
         <OrdersScreen
           onBack={() => setScreen('home')}
           onOrderPress={goOrderDetail}
+          onOfferPress={goOfferDetail}
         />
       ) : null}
 
@@ -1055,6 +1101,14 @@ export default function App() {
             const updated = await Cooking.update(id, { extensionMinutes: minutes });
             setTodayMenu((curr) => curr.map((d) => d.id === id ? updated : d));
           }}
+          onGoOffline={async (id) => {
+            const updated = await Cooking.update(id, { imageUrl: null });
+            setTodayMenu((curr) => curr.map((d) => d.id === id ? updated : d));
+          }}
+          onGoLiveTimer={async (id, minutes, plates) => {
+            const updated = await Cooking.update(id, { extensionMinutes: minutes, plates });
+            setTodayMenu((curr) => curr.map((d) => d.id === id ? updated : d));
+          }}
           onGoLive={async (id, base64) => {
             const imageUrl = `data:image/jpeg;base64,${base64}`;
             const updated = await Cooking.update(id, { imageUrl });
@@ -1079,6 +1133,22 @@ export default function App() {
           onBack={() => { setScreen('orders'); loadHomeData(); }}
         />
       ) : null}
+
+      {/* ── OFFER DETAIL (paid live-board dish offers) ──────────────────── */}
+      {screen === 'offer-detail' && activeOfferId ? (() => {
+        const activeOffer = dishOffers.find((o) => o.id === activeOfferId) as PaidDishOffer | undefined;
+        return activeOffer ? (
+          <OfferDetailScreen
+            offer={activeOffer}
+            onBack={() => { setScreen('orders'); loadHomeData(); }}
+            onUpdateStatus={async (id, status) => {
+              const updated = await Offers.updateOrderStatus(id, status);
+              setDishOffers((prev) => prev.map((o) => o.id === id ? updated : o));
+              return updated;
+            }}
+          />
+        ) : null;
+      })() : null}
 
       {/* ── EARNINGS ─────────────────────────────────────────────────── */}
       {screen === 'earnings' ? (
@@ -1603,6 +1673,63 @@ function HomeCulinaryCard({ todayCount, onPress }: { todayCount: number; onPress
   );
 }
 
+function ChefHomeTabs({
+  active,
+  onSwitch,
+  ordersCount,
+  requestsCount,
+}: {
+  active: 'orders' | 'requests';
+  onSwitch: (tab: 'orders' | 'requests') => void;
+  ordersCount: number;
+  requestsCount: number;
+}) {
+  const slideAnim = useRef(new Animated.Value(active === 'orders' ? 0 : 1)).current;
+  const tabWidth = (SW - 48) / 2 - 2;
+
+  useEffect(() => {
+    Animated.spring(slideAnim, {
+      toValue: active === 'orders' ? 0 : 1,
+      useNativeDriver: false,
+      tension: 110,
+      friction: 11,
+    }).start();
+  }, [active, slideAnim]);
+
+  const translateX = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [2, tabWidth + 2],
+  });
+
+  const tabs: Array<{ key: 'orders' | 'requests'; label: string; count: number }> = [
+    { key: 'orders', label: 'Active Orders', count: ordersCount },
+    { key: 'requests', label: 'Request Board', count: requestsCount },
+  ];
+
+  return (
+    <View style={homeSt.tabBar}>
+      <Animated.View style={[homeSt.tabSlider, { width: tabWidth, transform: [{ translateX }] }]} />
+      {tabs.map((tab) => (
+        <TouchableOpacity
+          key={tab.key}
+          style={homeSt.tabBtn}
+          activeOpacity={0.82}
+          onPress={() => onSwitch(tab.key)}
+        >
+          <Text style={[homeSt.tabText, active === tab.key && homeSt.tabTextActive]}>{tab.label}</Text>
+          {tab.count > 0 ? (
+            <View style={[homeSt.tabBadge, active === tab.key && homeSt.tabBadgeActive]}>
+              <Text style={[homeSt.tabBadgeText, active === tab.key && homeSt.tabBadgeTextActive]}>
+                {tab.count > 99 ? '99+' : tab.count}
+              </Text>
+            </View>
+          ) : null}
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 //  HOME SCREEN
 // ─────────────────────────────────────────────────────────────────────────
@@ -1612,7 +1739,7 @@ function HomeScreen({
   todayMenu, onOpenSkills,
   requests, ignoredRequestIds, onIgnoreRequest, chefGeoRadius,
   activeOrders, dishOffers, acceptedDishOffers, earningsTotal, loading, refreshing,
-  onRefresh, onRequestPress, onOrderPress,
+  onRefresh, onRequestPress, onOrderPress, onOfferPress,
   onViewAllOrders, onViewEarnings, onViewProfile,
   onOfferAccept, onOfferReject, onOfferCounter,
 }: {
@@ -1638,6 +1765,7 @@ function HomeScreen({
   onRefresh: () => void;
   onRequestPress: (id: string) => void;
   onOrderPress: (id: string) => void;
+  onOfferPress: (id: string) => void;
   onViewAllOrders: () => void;
   onViewEarnings: () => void;
   onViewProfile: () => void;
@@ -1645,10 +1773,21 @@ function HomeScreen({
   onOfferReject: (id: string) => Promise<void>;
   onOfferCounter: (id: string, counterPrice: number, counterNote?: string) => Promise<void>;
 }) {
-  const liveDishOffers = dishOffers.filter((offer) => offer.status !== 'PAID');
+  const liveDishOffers = dishOffers.filter((offer) => offer.status !== 'PAID' && offer.status !== 'ADVANCE_PAID');
   const visibleRequests = requests.filter((r) => !ignoredRequestIds.includes(r.id));
   const activeAcceptedDishOffers = acceptedDishOffers.filter((offer) => getPaidOfferOrderStatus(offer) !== 'DELIVERED');
   const activeWorkCount = activeOrders.length + activeAcceptedDishOffers.length;
+  const requestBoardCount = visibleRequests.length + liveDishOffers.length;
+
+  const [homeTab, setHomeTab] = useState<'orders' | 'requests'>(activeWorkCount > 0 ? 'orders' : 'requests');
+  const prevActiveWorkCount = useRef(activeWorkCount);
+  useEffect(() => {
+    // A request/offer just got confirmed and paid — surface it immediately.
+    if (activeWorkCount > prevActiveWorkCount.current) {
+      setHomeTab('orders');
+    }
+    prevActiveWorkCount.current = activeWorkCount;
+  }, [activeWorkCount]);
 
   const headerY = useRef(new Animated.Value(-20)).current;
   const headerOpacity = useRef(new Animated.Value(0)).current;
@@ -1717,8 +1856,8 @@ function HomeScreen({
 
       {/* Stat cards */}
       <View style={homeSt.statsRow}>
-        <HomeStatCard label="ACTIVE ORDERS" value={String(activeWorkCount)} delay={100} onPress={onViewAllOrders} />
-        <HomeStatCard label="NOTICES" value={String(visibleRequests.length + liveDishOffers.length)} delay={200} />
+        <HomeStatCard label="ACTIVE ORDERS" value={String(activeWorkCount)} delay={100} onPress={() => setHomeTab('orders')} />
+        <HomeStatCard label="NOTICES" value={String(requestBoardCount)} delay={200} onPress={() => setHomeTab('requests')} />
         <HomeStatCard
           label="EARNINGS"
           value={`\u20B9${earningsTotal >= 1000 ? `${(earningsTotal / 1000).toFixed(1)}k` : earningsTotal}`}
@@ -1731,43 +1870,52 @@ function HomeScreen({
       {/* Culinary skills */}
       <HomeCulinaryCard todayCount={todayMenu.length} onPress={onOpenSkills} />
 
-      {/* Active orders */}
-      {activeWorkCount > 0 ? (
-        <View style={homeSt.section}>
-          <View style={homeSt.sectionHeader}>
-            <Text style={homeSt.sectionTitle}>Active Orders</Text>
-            <TouchableOpacity onPress={onViewAllOrders}><Text style={homeSt.seeAll}>See all →</Text></TouchableOpacity>
+      {/* ── Orders / Request Board tabs ─────────────────────────────────── */}
+      <ChefHomeTabs
+        active={homeTab}
+        onSwitch={setHomeTab}
+        ordersCount={activeWorkCount}
+        requestsCount={requestBoardCount}
+      />
+
+      {homeTab === 'orders' ? (
+        activeWorkCount > 0 ? (
+          <View style={homeSt.section}>
+            {activeOrders.map((order) => (
+              <ActiveOrderCard key={order.id} order={order} onPress={() => onOrderPress(order.id)} />
+            ))}
+            {activeAcceptedDishOffers.map((offer) => (
+              <ManagedAcceptedOfferCard key={offer.id} offer={offer} onPress={() => onOfferPress(offer.id)} />
+            ))}
+            <TouchableOpacity onPress={onViewAllOrders} style={homeSt.historyLink}>
+              <Text style={homeSt.seeAll}>Order history →</Text>
+            </TouchableOpacity>
           </View>
-          {activeOrders.slice(0, 2).map((order) => (
-            <ActiveOrderCard key={order.id} order={order} onPress={() => onOrderPress(order.id)} />
-          ))}
-          {activeAcceptedDishOffers.slice(0, Math.max(0, 2 - activeOrders.length)).map((offer) => (
-            <AcceptedOfferCard key={offer.id} offer={offer} />
-          ))}
-        </View>
-      ) : null}
-
-      {/* ── Unified Request Board ─────────────────────────────────────── */}
-      {(() => {
-        type BoardItem =
-          | { kind: 'request'; data: RequestItem; ts: number }
-          | { kind: 'offer';   data: DishOffer;   ts: number };
-
-        const items: BoardItem[] = [
-          ...visibleRequests.map((r): BoardItem => ({ kind: 'request', data: r, ts: new Date(r.createdAt).getTime() })),
-          ...liveDishOffers.map((o): BoardItem => ({ kind: 'offer', data: o, ts: new Date(o.createdAt).getTime() })),
-        ].sort((a, b) => b.ts - a.ts);
-
-        const total = items.length;
-
-        return (
-          <>
-            <View style={homeSt.sectionHeader}>
-              <Text style={homeSt.sectionTitle}>Request Board</Text>
-              <View style={homeSt.badge}>
-                <Text style={homeSt.badgeText}>{total} live</Text>
-              </View>
+        ) : (
+          <View style={homeSt.requestCard}>
+            <View style={homeSt.emptyState}>
+              <Text style={homeSt.emptyEmoji}>📦</Text>
+              <Text style={homeSt.emptyTitle}>No active orders yet</Text>
+              <Text style={homeSt.emptySub}>
+                Once a request or offer is confirmed and paid, it'll show up here.
+              </Text>
             </View>
+          </View>
+        )
+      ) : (
+        (() => {
+          type BoardItem =
+            | { kind: 'request'; data: RequestItem; ts: number }
+            | { kind: 'offer';   data: DishOffer;   ts: number };
+
+          const items: BoardItem[] = [
+            ...visibleRequests.map((r): BoardItem => ({ kind: 'request', data: r, ts: new Date(r.createdAt).getTime() })),
+            ...liveDishOffers.map((o): BoardItem => ({ kind: 'offer', data: o, ts: new Date(o.createdAt).getTime() })),
+          ].sort((a, b) => b.ts - a.ts);
+
+          const total = items.length;
+
+          return (
             <View style={homeSt.requestCard}>
               <View style={homeSt.geoBar}>
                 <Text style={homeSt.geoIcon}>🎯</Text>
@@ -1818,9 +1966,9 @@ function HomeScreen({
                 </View>
               )}
             </View>
-          </>
-        );
-      })()}
+          );
+        })()
+      )}
 
       <View style={{ height: 110 }} />
 
@@ -1834,6 +1982,9 @@ function HomeScreen({
                 {counterOffer.dishEmoji} {counterOffer.dishName} — {counterOffer.plates} plate{counterOffer.plates > 1 ? 's' : ''} @ {'\u20B9'}{counterOffer.offerPrice}/plate
               </Text>
             ) : null}
+            <Text style={offerSt.limitNote}>
+              You can send only 1 counter offer. After this, you will only be able to accept or reject the buyer's response.
+            </Text>
             {counterOffer?.counterPrice ? (
               <View style={offerSt.lastCounterBanner}>
                 <Text style={offerSt.lastCounterLabel}>YOUR LAST COUNTER</Text>
@@ -2262,10 +2413,11 @@ function RequestDetailScreen({
 //  ORDERS SCREEN
 // ─────────────────────────────────────────────────────────────────────────
 function OrdersScreen({
-  onBack, onOrderPress,
+  onBack, onOrderPress, onOfferPress,
 }: {
   onBack: () => void;
   onOrderPress: (id: string) => void;
+  onOfferPress: (id: string) => void;
 }) {
   const [orders, setOrdersState] = useState<OrderItem[]>([]);
   const [acceptedOffers, setAcceptedOffers] = useState<PaidDishOffer[]>([]);
@@ -2277,10 +2429,10 @@ function OrdersScreen({
     try {
       const [data, offerData] = await Promise.all([
         Orders.list(),
-        Offers.list(['PAID']),
+        Offers.list(['ADVANCE_PAID', 'PAID']),
       ]);
       setOrdersState(data);
-      setAcceptedOffers(offerData.filter((offer): offer is PaidDishOffer => offer.status === 'PAID'));
+      setAcceptedOffers(offerData.filter((offer): offer is PaidDishOffer => offer.status === 'PAID' || offer.status === 'ADVANCE_PAID'));
     } catch { /* ignore */ }
     finally { setLoading(false); }
   }, []);
@@ -2333,14 +2485,7 @@ function OrdersScreen({
                 <OrderCard key={order.id} order={order} onPress={() => onOrderPress(order.id)} />
               ))}
               {activeAcceptedOffers.map((offer) => (
-                <ManagedAcceptedOfferCard
-                  key={offer.id}
-                  offer={offer}
-                  onUpdateStatus={async (id, status) => {
-                    const updated = await Offers.updateOrderStatus(id, status);
-                    setAcceptedOffers((curr) => curr.map((item) => item.id === id ? updated as PaidDishOffer : item));
-                  }}
-                />
+                <ManagedAcceptedOfferCard key={offer.id} offer={offer} onPress={() => onOfferPress(offer.id)} />
               ))}
             </>
           ) : (
@@ -2349,13 +2494,158 @@ function OrdersScreen({
                 <OrderCard key={order.id} order={order} onPress={() => onOrderPress(order.id)} />
               ))}
               {historyAcceptedOffers.map((offer) => (
-                <ManagedAcceptedOfferCard key={offer.id} offer={offer} />
+                <ManagedAcceptedOfferCard key={offer.id} offer={offer} onPress={() => onOfferPress(offer.id)} />
               ))}
             </>
           )}
         </ScrollView>
       )}
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  SWIPE-TO-CONFIRM STATUS CONTROL
+// ─────────────────────────────────────────────────────────────────────────
+function SwipeToConfirm({
+  label, color, bgColor, busy, onConfirm,
+}: {
+  label: string;
+  color: string;
+  bgColor: string;
+  busy?: boolean;
+  onConfirm: () => Promise<boolean>;
+}) {
+  const THUMB = 52;
+  const TRACK_PAD = 4;
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [confirmed, setConfirmed] = useState(false);
+  const pan = useRef(new Animated.Value(0)).current;
+  const maxX = Math.max(1, trackWidth - THUMB - TRACK_PAD * 2);
+  const locked = !!busy || confirmed;
+
+  // Recreated every render (cheap) so the closures below always see the
+  // current maxX/locked — a PanResponder pinned via useRef(...).current would
+  // otherwise freeze maxX at the value from the very first render (0, before
+  // onLayout ever fires), clamping the drag to ~1px forever.
+  const panResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => !locked,
+    onMoveShouldSetPanResponder: (_e, g) => !locked && Math.abs(g.dx) > 4,
+    onPanResponderMove: (_e, g) => {
+      pan.setValue(Math.min(Math.max(0, g.dx), maxX));
+    },
+    onPanResponderRelease: (_e, g) => {
+      const dx = Math.min(Math.max(0, g.dx), maxX);
+      if (maxX > 0 && dx >= maxX * 0.78) {
+        Animated.timing(pan, { toValue: maxX, duration: 140, useNativeDriver: true }).start(async () => {
+          setConfirmed(true);
+          const ok = await onConfirm();
+          if (!ok) {
+            setConfirmed(false);
+            Animated.spring(pan, { toValue: 0, useNativeDriver: true, friction: 7 }).start();
+          }
+        });
+      } else {
+        Animated.spring(pan, { toValue: 0, useNativeDriver: true, friction: 7 }).start();
+      }
+    },
+  });
+
+  return (
+    <View
+      style={[swipeSt.track, { backgroundColor: bgColor }]}
+      onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}
+    >
+      <Text style={[swipeSt.trackLabel, { color }]} pointerEvents="none">
+        {busy || confirmed ? 'Updating…' : label}
+      </Text>
+      <Animated.View
+        {...(locked ? {} : panResponder.panHandlers)}
+        style={[swipeSt.thumb, { backgroundColor: color, transform: [{ translateX: pan }] }]}
+      >
+        {busy || confirmed ? <ActivityIndicator size="small" color={C.white} /> : <Text style={swipeSt.thumbArrow}>›</Text>}
+      </Animated.View>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  DELIVERY MAP CARD (geocodes the order address for a read-only pin view)
+// ─────────────────────────────────────────────────────────────────────────
+function getStaticMapHtml(lat: number, lng: number): string {
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; }
+      body { background: #f5f2ed; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script>
+      var map = L.map('map', { zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false, doubleClickZoom: false }).setView([${lat}, ${lng}], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+      L.marker([${lat}, ${lng}]).addTo(map);
+    </script>
+  </body>
+</html>`;
+}
+
+function DeliveryMapCard({ address }: { address: string }) {
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatus('loading');
+    setCoords(null);
+    (async () => {
+      try {
+        const qs = new URLSearchParams({ format: 'jsonv2', q: address, limit: '1' });
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?${qs.toString()}`, {
+          headers: { Accept: 'application/json', 'Accept-Language': 'en' },
+        });
+        const data = (await res.json()) as Array<{ lat: string; lon: string }>;
+        if (cancelled) return;
+        if (data.length > 0) {
+          setCoords({ lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) });
+          setStatus('ready');
+        } else {
+          setStatus('error');
+        }
+      } catch {
+        if (!cancelled) setStatus('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [address]);
+
+  if (status === 'error') return null;
+
+  return (
+    <View style={odSt.mapCard}>
+      <Text style={odSt.mapTitle}>📍 Delivery Location</Text>
+      {status === 'loading' || !coords ? (
+        <View style={odSt.mapLoading}><ActivityIndicator color={C.mint} /></View>
+      ) : (
+        <View style={odSt.mapFrame} pointerEvents="none">
+          <WebView source={{ html: getStaticMapHtml(coords.lat, coords.lng) }} style={{ flex: 1 }} scrollEnabled={false} />
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -2391,14 +2681,16 @@ function OrderDetailScreen({
     return () => clearInterval(id);
   }, []);
 
-  const updateStatus = async (next: OrderStatus) => {
-    if (!order) return;
+  const updateStatus = async (next: OrderStatus): Promise<boolean> => {
+    if (!order) return false;
     setUpdating(true);
     try {
       const updated = await Orders.updateStatus(order.id, next);
       setOrder(updated);
+      return true;
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Update failed');
+      return false;
     } finally {
       setUpdating(false);
     }
@@ -2450,17 +2742,16 @@ function OrderDetailScreen({
   if (loading) return <CenteredLoader />;
   if (!order)  return <ErrorView message={error || 'Order not found'} onBack={onBack} />;
 
-  const meta = order.request.delivery === 'pickup' && order.status === 'READY'
-    ? { ...ORDER_STATUS_META.READY, next: 'DELIVERED' as OrderStatus, nextLabel: '📦 Mark Delivered' }
-    : ORDER_STATUS_META[order.status];
-  const isTerminal = ['DELIVERED', 'CANCELLED'].includes(order.status);
-  const cookingCountdown = order.status === 'COOKING' ? countdownTo(order.readyAt) : null;
+  const meta = getChefOrderMeta(order);
+  const paymentConfirmed = hasBuyerPaidForOrder(order);
+  const isTerminal = paymentConfirmed && ['DELIVERED', 'CANCELLED'].includes(order.status);
+  const cookingCountdown = paymentConfirmed && order.status === 'COOKING' ? countdownTo(order.readyAt) : null;
 
   // Build timeline
   const TIMELINE: OrderStatus[] = order.request.delivery === 'pickup'
     ? ['CONFIRMED', 'COOKING', 'READY', 'DELIVERED']
     : ['CONFIRMED', 'COOKING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED'];
-  const currentIdx = TIMELINE.indexOf(order.status as OrderStatus);
+  const currentIdx = paymentConfirmed ? TIMELINE.indexOf(order.status as OrderStatus) : -1;
 
   return (
     <>
@@ -2469,7 +2760,7 @@ function OrderDetailScreen({
           <Text style={ss.backIcon}>←</Text>
         </TouchableOpacity>
         <Text style={ss.headerTitle}>Order #{order.id.slice(-6).toUpperCase()}</Text>
-        <StatusPill status={order.status} />
+        <StatusPill status={order.status} overrideMeta={meta} />
       </View>
 
       <ScrollView style={ss.scroll} showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 18, paddingBottom: 40 }}>
@@ -2525,14 +2816,26 @@ function OrderDetailScreen({
             </View>
             <Text style={odSt.buyerPhone}>📞 {order.buyer.phone}</Text>
           </View>
-          <TouchableOpacity style={odSt.callBtn} activeOpacity={0.8}>
+          <TouchableOpacity style={odSt.callBtn} activeOpacity={0.8} onPress={() => Linking.openURL(`tel:${order.buyer.phone}`)}>
             <Text style={odSt.callBtnText}>Call</Text>
           </TouchableOpacity>
         </View>
 
+        {/* Delivery map */}
+        {order.address ? <DeliveryMapCard address={order.address} /> : null}
+
         {/* Order timeline */}
         <View style={odSt.timelineCard}>
           <Text style={odSt.timelineTitle}>Order Progress</Text>
+          {!paymentConfirmed ? (
+            <View style={[odSt.timerBanner, { backgroundColor: meta.bg }]}>
+              <Text style={[odSt.timerBannerText, { color: meta.color }]}>
+                {order.paymentStatus === 'EXPIRED'
+                  ? 'Payment window expired. This order cannot start cooking.'
+                  : 'Offer accepted. Waiting for buyer payment before cooking starts.'}
+              </Text>
+            </View>
+          ) : null}
           {cookingCountdown ? (
             <View style={odSt.timerBanner}>
               <Text style={odSt.timerBannerText}>🍳 Ready in {cookingCountdown}</Text>
@@ -2572,21 +2875,150 @@ function OrderDetailScreen({
           </View>
         ) : null}
 
-        {/* Primary action button */}
-        {!isTerminal && meta?.next ? (
-          <TouchableOpacity
-            style={[odSt.actionBtn, { backgroundColor: meta.color }]}
-            onPress={() => updateStatus(meta.next!)}
-            activeOpacity={0.85}
-            disabled={updating}
-          >
-            {updating
-              ? <ActivityIndicator color={C.white} />
-              : <Text style={odSt.actionBtnText}>{meta.nextLabel}</Text>}
-          </TouchableOpacity>
+        {/* Primary action: swipe to advance status */}
+        {paymentConfirmed && !isTerminal && meta?.next ? (
+          <SwipeToConfirm
+            key={order.status}
+            label={SWIPE_ACTION_LABEL[meta.next] ?? meta.nextLabel ?? 'Slide to continue'}
+            color={meta.color}
+            bgColor={meta.bg}
+            busy={updating}
+            onConfirm={() => updateStatus(meta.next!)}
+          />
         ) : null}
 
         <Text style={odSt.orderedAt}>Ordered {timeAgo(order.createdAt)}</Text>
+      </ScrollView>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  OFFER DETAIL SCREEN (paid live-board dish offers — no formal Request/Quote)
+// ─────────────────────────────────────────────────────────────────────────
+function OfferDetailScreen({
+  offer, onBack, onUpdateStatus,
+}: {
+  offer: PaidDishOffer;
+  onBack: () => void;
+  onUpdateStatus: (id: string, status: 'COOKING' | 'READY' | 'OUT_FOR_DELIVERY' | 'DELIVERED') => Promise<DishOffer>;
+}) {
+  const [current, setCurrent] = useState<PaidDishOffer>(offer);
+  const [updating, setUpdating] = useState(false);
+
+  const status = getPaidOfferOrderStatus(current);
+  const meta = getPaidOfferMeta(current);
+  const isTerminal = status === 'DELIVERED';
+  const total = (current.agreedPrice ?? current.offerPrice) * current.plates;
+
+  const TIMELINE: OrderStatus[] = current.deliveryMode === 'delivery'
+    ? ['CONFIRMED', 'COOKING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED']
+    : ['CONFIRMED', 'COOKING', 'READY', 'DELIVERED'];
+  const currentIdx = TIMELINE.indexOf(status);
+
+  const advance = async (next: OrderStatus): Promise<boolean> => {
+    if (next !== 'COOKING' && next !== 'READY' && next !== 'OUT_FOR_DELIVERY' && next !== 'DELIVERED') return false;
+    setUpdating(true);
+    try {
+      const updated = await onUpdateStatus(current.id, next);
+      setCurrent(updated as PaidDishOffer);
+      return true;
+    } catch (e: unknown) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Update failed');
+      return false;
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  return (
+    <>
+      <View style={ss.header}>
+        <TouchableOpacity style={ss.backBtn} onPress={onBack} activeOpacity={0.75}>
+          <Text style={ss.backIcon}>←</Text>
+        </TouchableOpacity>
+        <Text style={ss.headerTitle}>Order #{current.id.slice(-6).toUpperCase()}</Text>
+        <StatusPill status={status} />
+      </View>
+
+      <ScrollView style={ss.scroll} showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 18, paddingBottom: 40 }}>
+
+        {/* Order summary */}
+        <View style={odSt.summaryCard}>
+          <View style={odSt.summaryTop}>
+            <View style={odSt.dishIcon}>
+              <Text style={{ fontSize: 26 }}>{current.dishEmoji}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={odSt.dishName}>{current.dishName}</Text>
+              <Text style={odSt.dishMeta}>
+                {current.plates} plate{current.plates > 1 ? 's' : ''} · ₹{current.agreedPrice ?? current.offerPrice}/plate
+              </Text>
+            </View>
+            <View style={odSt.priceBox}>
+              <Text style={odSt.priceAmt}>₹{total}</Text>
+              <Text style={odSt.priceLabel}>{current.status === 'ADVANCE_PAID' ? 'Advance paid' : 'Paid in full'}</Text>
+            </View>
+          </View>
+          <View style={odSt.deliveryRow}>
+            <Text style={odSt.deliveryText}>
+              {current.deliveryMode === 'delivery' ? '🛵 Home delivery' : '🚶 Self pickup'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Buyer info */}
+        <View style={odSt.buyerCard}>
+          <View style={odSt.buyerAv}>
+            <Text style={odSt.buyerAvText}>{current.buyerName[0]}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={odSt.buyerName}>{current.buyerName}</Text>
+            <Text style={odSt.buyerPhone}>Live-board order — phone and address aren't collected for these</Text>
+          </View>
+        </View>
+
+        {current.message ? (
+          <Text style={odSt.offerNote}>💬 "{current.message}"</Text>
+        ) : null}
+
+        {/* Order timeline */}
+        <View style={odSt.timelineCard}>
+          <Text style={odSt.timelineTitle}>Order Progress</Text>
+          <View style={odSt.timeline}>
+            {TIMELINE.map((s, i) => {
+              const done = i <= currentIdx;
+              const isCurrent = i === currentIdx;
+              return (
+                <View key={s} style={odSt.timelineRow}>
+                  <View style={odSt.timelineDotCol}>
+                    <View style={[odSt.timelineDot, done && odSt.timelineDotDone, isCurrent && odSt.timelineDotCurrent]} />
+                    {i < TIMELINE.length - 1 ? (
+                      <View style={[odSt.timelineLine, done && odSt.timelineLineDone]} />
+                    ) : null}
+                  </View>
+                  <Text style={[odSt.timelineLabel, done && odSt.timelineLabelDone]}>
+                    {ORDER_STATUS_META[s]?.label ?? s}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* Primary action: swipe to advance status */}
+        {!isTerminal && meta?.next ? (
+          <SwipeToConfirm
+            key={status}
+            label={SWIPE_ACTION_LABEL[meta.next] ?? meta.nextLabel ?? 'Slide to continue'}
+            color={meta.color}
+            bgColor={meta.bg}
+            busy={updating}
+            onConfirm={() => advance(meta.next!)}
+          />
+        ) : null}
+
+        <Text style={odSt.orderedAt}>Paid {timeAgo(current.paidAt ?? current.updatedAt)}</Text>
       </ScrollView>
     </>
   );
@@ -3155,6 +3587,97 @@ function TimerExpiredModal({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+//  GO LIVE TIMER MODAL (shown when the offline→online toggle is flipped on)
+// ─────────────────────────────────────────────────────────────────────────
+function GoLiveTimerModal({
+  dish,
+  onClose,
+  onConfirm,
+  starting,
+}: {
+  dish: TodayDish;
+  onClose: () => void;
+  onConfirm: (minutes: number, plates: number) => void;
+  starting: boolean;
+}) {
+  const [minutes, setMinutes] = useState(30);
+  const [plates, setPlates] = useState(Math.max(1, dish.plates || 1));
+  const scaleAnim = useRef(new Animated.Value(0.88)).current;
+  const opAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(scaleAnim, { toValue: 1, tension: 80, friction: 8, useNativeDriver: true }),
+      Animated.timing(opAnim, { toValue: 1, duration: 220, useNativeDriver: true }),
+    ]).start();
+  }, []);
+
+  return (
+    <Modal transparent animationType="none" statusBarTranslucent>
+      <Animated.View style={[mSt.backdrop, { opacity: opAnim }]}>
+        <Animated.View style={[mSt.sheet, { transform: [{ scale: scaleAnim }] }]}>
+          <View style={mSt.timerIconWrap}>
+            <Text style={mSt.timerIcon}>🟢</Text>
+          </View>
+          <Text style={mSt.sheetTitle}>Go Live</Text>
+          <Text style={mSt.sheetDish} numberOfLines={1}>{dish.dishName}</Text>
+          <Text style={mSt.sheetSub}>Set how many plates you're offering and how long this dish should cook before it's ready to go live again.</Text>
+
+          <View style={todaySt.portionCard}>
+            <View style={todaySt.stepperRow}>
+              <Text style={todaySt.stepperLabel}>Number of plates</Text>
+              <View style={todaySt.stepperControls}>
+                <TouchableOpacity style={todaySt.stepBtn} onPress={() => setPlates((curr) => Math.max(1, curr - 1))} activeOpacity={0.75}>
+                  <Text style={todaySt.stepBtnText}>−</Text>
+                </TouchableOpacity>
+                <Text style={todaySt.stepperValue}>{plates}</Text>
+                <TouchableOpacity style={todaySt.stepBtn} onPress={() => setPlates((curr) => Math.min(500, curr + 1))} activeOpacity={0.75}>
+                  <Text style={todaySt.stepBtnText}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+
+          <View style={todaySt.sliderCard}>
+            <View style={todaySt.sliderTopRow}>
+              <Text style={todaySt.sliderTitle}>Time to prepare</Text>
+              <Text style={todaySt.sliderValue}>{formatReadyTime(minutes)}</Text>
+            </View>
+            <Slider
+              style={todaySt.readySlider}
+              minimumValue={5}
+              maximumValue={120}
+              step={5}
+              minimumTrackTintColor={C.mint}
+              maximumTrackTintColor={C.border}
+              thumbTintColor={C.mint}
+              value={minutes}
+              onValueChange={setMinutes}
+            />
+            <View style={todaySt.sliderLabels}>
+              <Text style={todaySt.sliderTickLabel}>5 mins</Text>
+              <Text style={todaySt.sliderTickLabel}>1 hr</Text>
+              <Text style={todaySt.sliderTickLabel}>2 hrs</Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[mSt.readyBtn, starting && { opacity: 0.6 }]}
+            onPress={() => onConfirm(minutes, plates)}
+            activeOpacity={0.85}
+            disabled={starting}
+          >
+            {starting ? <ActivityIndicator color={C.white} /> : <Text style={mSt.readyBtnText}>Start Timer</Text>}
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onClose} activeOpacity={0.75} disabled={starting} style={mSt.cancelLink}>
+            <Text style={mSt.cancelLinkText}>Cancel</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </Animated.View>
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 //  GO LIVE MODAL
 // ─────────────────────────────────────────────────────────────────────────
 function GoLiveModal({
@@ -3321,6 +3844,8 @@ function TodayMenuScreen({
   onSaveDish,
   onRemoveDish,
   onExtendTimer,
+  onGoOffline,
+  onGoLiveTimer,
   onGoLive,
 }: {
   dishes: TodayDish[];
@@ -3329,6 +3854,8 @@ function TodayMenuScreen({
   onSaveDish: (dish: CreateCookingDishPayload) => Promise<void>;
   onRemoveDish: (id: string) => Promise<void>;
   onExtendTimer: (id: string, minutes: number) => Promise<void>;
+  onGoOffline: (id: string) => Promise<void>;
+  onGoLiveTimer: (id: string, minutes: number, plates: number) => Promise<void>;
   onGoLive: (id: string, base64: string) => Promise<void>;
 }) {
   const [dishName, setDishName] = useState('');
@@ -3358,14 +3885,47 @@ function TodayMenuScreen({
   const [uploading, setUploading] = useState(false);
   const alreadyAlerted = useRef(new Set<string>());
   const dishesRef = useRef(dishes);
+  const expiredDishRef = useRef<TodayDish | null>(null);
+  const goLiveDishRef = useRef<TodayDish | null>(null);
   useEffect(() => { dishesRef.current = dishes; }, [dishes]);
+  useEffect(() => { expiredDishRef.current = expiredDish; }, [expiredDish]);
+  useEffect(() => { goLiveDishRef.current = goLiveDish; }, [goLiveDish]);
+
+  // Live/offline toggle state
+  const [goLiveTimerDish, setGoLiveTimerDish] = useState<TodayDish | null>(null);
+  const [togglingOfflineId, setTogglingOfflineId] = useState<string | null>(null);
+  const [startingTimer, setStartingTimer] = useState(false);
+
+  const findNextExpiredDish = (excludeIds: string[] = []) => {
+    const excluded = new Set(excludeIds);
+    for (const dish of dishesRef.current) {
+      if (excluded.has(dish.id)) continue;
+      if (dish.imageUrl) continue;
+      if (dish.plates <= 0) continue;
+      const remaining = Math.floor((new Date(dish.readyAt).getTime() - Date.now()) / 1000);
+      if (remaining <= 0) return dish;
+    }
+    return null;
+  };
+
+  const showNextExpiredDish = (excludeIds: string[] = []) => {
+    const nextDish = findNextExpiredDish(excludeIds);
+    if (nextDish) {
+      alreadyAlerted.current.add(nextDish.id);
+      setExpiredDish(nextDish);
+      return;
+    }
+    setExpiredDish(null);
+  };
 
   // Single interval: tick display + detect newly-expired timers
   useEffect(() => {
     const id = setInterval(() => {
       setBoardTick((t) => t + 1);
+      if (expiredDishRef.current || goLiveDishRef.current) return;
       for (const dish of dishesRef.current) {
         if (dish.imageUrl) continue; // already live, skip
+        if (dish.plates <= 0) continue; // sold out — offline until chef relists, no prompt
         const remaining = Math.floor((new Date(dish.readyAt).getTime() - Date.now()) / 1000);
         if (remaining <= 0 && !alreadyAlerted.current.has(dish.id)) {
           alreadyAlerted.current.add(dish.id);
@@ -3472,11 +4032,12 @@ function TodayMenuScreen({
 
   const handleExtend = async (mins: number) => {
     if (!expiredDish) return;
+    const currentDishId = expiredDish.id;
     setExtending(true);
     try {
-      await onExtendTimer(expiredDish.id, mins);
-      alreadyAlerted.current.delete(expiredDish.id); // allow re-alert when new timer ends
-      setExpiredDish(null);
+      await onExtendTimer(currentDishId, mins);
+      alreadyAlerted.current.delete(currentDishId); // allow re-alert when new timer ends
+      showNextExpiredDish([currentDishId]);
     } catch {
       Alert.alert('Error', 'Could not extend timer.');
     } finally {
@@ -3486,15 +4047,49 @@ function TodayMenuScreen({
 
   const handleGoLive = async (base64: string) => {
     if (!goLiveDish) return;
+    const currentDishId = goLiveDish.id;
     setUploading(true);
     try {
-      await onGoLive(goLiveDish.id, base64);
+      await onGoLive(currentDishId, base64);
       setGoLiveDish(null);
-      setExpiredDish(null);
+      showNextExpiredDish([currentDishId]);
     } catch {
       Alert.alert('Error', 'Could not go live. Try again.');
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleToggleLive = (dish: TodayDish, next: boolean) => {
+    if (next) {
+      // Coming back online always goes through a fresh cook timer + photo,
+      // same as a brand-new dish — never flips straight to live.
+      setGoLiveTimerDish(dish);
+      return;
+    }
+    // Going offline is immediate — no timer prompt. This dish's old cook
+    // timer (readyAt) is now stale, so suppress it or the expiry watcher
+    // below would immediately pop the "Time's up!" modal on the next tick.
+    alreadyAlerted.current.add(dish.id);
+    if (expiredDish?.id === dish.id) showNextExpiredDish([dish.id]);
+    setTogglingOfflineId(dish.id);
+    onGoOffline(dish.id)
+      .catch(() => Alert.alert('Error', 'Could not take this dish offline. Try again.'))
+      .finally(() => setTogglingOfflineId(null));
+  };
+
+  const handleStartLiveTimer = async (minutes: number, plates: number) => {
+    if (!goLiveTimerDish) return;
+    setStartingTimer(true);
+    try {
+      await onGoLiveTimer(goLiveTimerDish.id, minutes, plates);
+      // Re-arm expiry detection for this dish now that its timer has restarted.
+      alreadyAlerted.current.delete(goLiveTimerDish.id);
+      setGoLiveTimerDish(null);
+    } catch {
+      Alert.alert('Error', 'Could not start the timer. Try again.');
+    } finally {
+      setStartingTimer(false);
     }
   };
 
@@ -3541,9 +4136,18 @@ function TodayMenuScreen({
                 <View style={[todaySt.liveBadge, dish.imageUrl && todaySt.liveBadgeLive]}>
                   <View style={[todaySt.liveDot, dish.imageUrl && todaySt.liveDotLive]} />
                   <Text style={[todaySt.liveText, dish.imageUrl && todaySt.liveTextLive]}>
-                    {dish.imageUrl ? 'LIVE' : 'live'}
+                    {dish.imageUrl ? 'LIVE' : 'Go Live'}
                   </Text>
                 </View>
+                <Switch
+                  value={!!dish.imageUrl}
+                  onValueChange={(next) => handleToggleLive(dish, next)}
+                  disabled={togglingOfflineId === dish.id}
+                  trackColor={{ false: '#D1D9D6', true: C.primaryLight }}
+                  thumbColor={dish.imageUrl ? C.mint : '#9EB5AD'}
+                  ios_backgroundColor="#D1D9D6"
+                  style={todaySt.liveSwitch}
+                />
               </View>
               <View style={todaySt.dishCardRight}>
                 <View style={todaySt.dishCardTopRow}>
@@ -3880,7 +4484,10 @@ function TodayMenuScreen({
         <TimerExpiredModal
           dish={expiredDish}
           onExtend={handleExtend}
-          onMarkReady={() => { setGoLiveDish(expiredDish); }}
+          onMarkReady={() => {
+            setGoLiveDish(expiredDish);
+            setExpiredDish(null);
+          }}
           extending={extending}
         />
       ) : null}
@@ -3889,9 +4496,23 @@ function TodayMenuScreen({
       {goLiveDish ? (
         <GoLiveModal
           dish={goLiveDish}
-          onClose={() => { setGoLiveDish(null); setExpiredDish(null); }}
+          onClose={() => {
+            const currentDishId = goLiveDish.id;
+            setGoLiveDish(null);
+            showNextExpiredDish([currentDishId]);
+          }}
           onGoLive={handleGoLive}
           uploading={uploading}
+        />
+      ) : null}
+
+      {/* Go live timer modal — shown when the offline→online switch is flipped */}
+      {goLiveTimerDish ? (
+        <GoLiveTimerModal
+          dish={goLiveTimerDish}
+          onClose={() => setGoLiveTimerDish(null)}
+          onConfirm={handleStartLiveTimer}
+          starting={startingTimer}
         />
       ) : null}
     </>
@@ -3926,11 +4547,22 @@ function DishOfferCard({
     PENDING: C.turmeric,
     COUNTERED: C.spice,
     HOLD: '#4F6CF5',
+    ADVANCE_PAID: C.mint,
     PAID: C.mint,
     REJECTED: C.warmGray,
     EXPIRED: C.red,
   };
+  const STATUS_LABEL: Record<string, string> = {
+    PENDING: 'Pending',
+    COUNTERED: 'Countered',
+    HOLD: 'Offer Accepted',
+    ADVANCE_PAID: 'Advance Paid',
+    PAID: 'Paid',
+    REJECTED: 'Rejected',
+    EXPIRED: 'Expired',
+  };
   const statusColor = STATUS_COLOR[offer.status] ?? C.warmGray;
+  const statusLabel = STATUS_LABEL[offer.status] ?? offer.status;
 
   return (
     <View style={offerSt.card}>
@@ -3949,7 +4581,7 @@ function DishOfferCard({
           ) : null}
         </View>
         <View style={[offerSt.statusPill, { backgroundColor: statusColor + '22' }]}>
-          <Text style={[offerSt.statusText, { color: statusColor }]}>{offer.status}</Text>
+          <Text style={[offerSt.statusText, { color: statusColor }]}>{statusLabel}</Text>
         </View>
       </View>
 
@@ -3980,6 +4612,13 @@ function DishOfferCard({
         </View>
       ) : null}
 
+      {/* Offer accepted, awaiting buyer payment */}
+      {offer.status === 'HOLD' ? (
+        <View style={offerSt.holdBanner}>
+          <Text style={offerSt.holdBannerText}>✅ Offer accepted — waiting for the buyer to confirm payment</Text>
+        </View>
+      ) : null}
+
       {/* Buyer message */}
       {offer.message ? (
         <Text style={offerSt.message}>"{offer.message}"</Text>
@@ -3995,7 +4634,7 @@ function DishOfferCard({
           >
             <Text style={offerSt.actionRejectText}>Reject</Text>
           </TouchableOpacity>
-          {!isExactPrice ? (
+          {!isExactPrice && (offer.chefCounterCount ?? 0) < 1 ? (
             <TouchableOpacity
               style={[offerSt.actionBtn, offerSt.actionCounter]}
               disabled={busy}
@@ -4012,6 +4651,9 @@ function DishOfferCard({
             <Text style={offerSt.actionAcceptText}>Accept</Text>
           </TouchableOpacity>
         </View>
+      ) : null}
+      {offer.status === 'PENDING' && !isExactPrice && (offer.chefCounterCount ?? 0) >= 1 ? (
+        <Text style={offerSt.actionHint}>Your one counter is used. You can now only accept or reject this offer.</Text>
       ) : null}
     </View>
   );
@@ -4095,10 +4737,12 @@ function RequestCard({ req, onPress, chefGeoRadius, onIgnore }: {
 }
 
 function ActiveOrderCard({ order, onPress }: { order: OrderItem; onPress: () => void }) {
-  const meta = order.request.delivery === 'pickup' && order.status === 'READY'
-    ? { ...ORDER_STATUS_META.READY, next: 'DELIVERED' as OrderStatus, nextLabel: '📦 Mark Delivered' }
-    : ORDER_STATUS_META[order.status];
-  const cookingCountdown = order.status === 'COOKING' ? countdownTo(order.readyAt) : null;
+  const meta = getChefOrderMeta(order);
+  const paymentConfirmed = hasBuyerPaidForOrder(order);
+  const cookingCountdown = paymentConfirmed && order.status === 'COOKING' ? countdownTo(order.readyAt) : null;
+  const actionText = paymentConfirmed
+    ? (cookingCountdown ? `🍳 Ready in ${cookingCountdown}` : meta.nextLabel)
+    : (order.paymentStatus === 'EXPIRED' ? 'Payment window expired' : 'Offer accepted · Awaiting buyer payment');
   return (
     <TouchableOpacity style={cardSt.orderCard} onPress={onPress} activeOpacity={0.85}>
       <View style={cardSt.orderTop}>
@@ -4113,54 +4757,29 @@ function ActiveOrderCard({ order, onPress }: { order: OrderItem; onPress: () => 
           <Text style={[cardSt.statusText, { color: meta?.color ?? C.warmGray }]}>{meta?.label ?? order.status}</Text>
         </View>
       </View>
-      {meta?.next ? (
+      {actionText ? (
         <View style={[cardSt.nextAction, { backgroundColor: meta.color + '18' }]}>
-          <Text style={[cardSt.nextActionText, { color: meta.color }]}>{cookingCountdown ? `🍳 Ready in ${cookingCountdown}` : meta.nextLabel}</Text>
-          <Text style={[cardSt.nextActionArrow, { color: meta.color }]}>›</Text>
+          <Text style={[cardSt.nextActionText, { color: meta.color }]}>{actionText}</Text>
+          <Text style={[cardSt.nextActionArrow, { color: meta.color }]}>{paymentConfirmed && meta?.next ? '›' : '•'}</Text>
         </View>
       ) : null}
     </TouchableOpacity>
   );
 }
 
-function AcceptedOfferCard({ offer }: { offer: PaidDishOffer }) {
-  const meta = ORDER_STATUS_META.CONFIRMED;
-  return (
-    <View style={cardSt.orderCard}>
-      <View style={cardSt.orderTop}>
-        <View style={[cardSt.orderEmoji, { backgroundColor: C.paleGreen }]}>
-          <Text style={{ fontSize: 20 }}>{offer.dishEmoji}</Text>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={cardSt.orderName}>{offer.dishName}</Text>
-          <Text style={cardSt.orderBuyer}>{offer.buyerName} · {offer.plates} plate{offer.plates > 1 ? 's' : ''} · ₹{(offer.agreedPrice ?? offer.offerPrice) * offer.plates}</Text>
-          <Text style={cardSt.orderTime}>Paid {timeAgo(offer.paidAt ?? offer.updatedAt)} · {offer.deliveryMode === 'delivery' ? 'Home delivery' : 'Self pickup'}</Text>
-        </View>
-        <View style={[cardSt.statusBadge, { backgroundColor: meta.bg }]}>
-          <Text style={[cardSt.statusText, { color: meta.color }]}>Paid</Text>
-        </View>
-      </View>
-      <View style={[cardSt.nextAction, { backgroundColor: meta.color + '18' }]}>
-        <Text style={[cardSt.nextActionText, { color: meta.color }]}>Buyer completed demo payment and confirmed this order</Text>
-        <Text style={[cardSt.nextActionArrow, { color: meta.color }]}>✓</Text>
-      </View>
-    </View>
-  );
-}
-
 function ManagedAcceptedOfferCard({
   offer,
-  onUpdateStatus,
+  onPress,
 }: {
   offer: PaidDishOffer;
-  onUpdateStatus?: (id: string, status: 'OUT_FOR_DELIVERY' | 'DELIVERED') => Promise<void>;
+  onPress?: () => void;
 }) {
   const status = getPaidOfferOrderStatus(offer);
-  const meta = ORDER_STATUS_META[status];
-  const action = getPaidOfferAction(offer);
+  const meta = getPaidOfferMeta(offer);
+  const Wrapper = onPress ? TouchableOpacity : View;
 
   return (
-    <View style={cardSt.orderCard}>
+    <Wrapper style={cardSt.orderCard} {...(onPress ? { onPress, activeOpacity: 0.85 } : {})}>
       <View style={cardSt.orderTop}>
         <View style={[cardSt.orderEmoji, { backgroundColor: C.paleGreen }]}>
           <Text style={{ fontSize: 20 }}>{offer.dishEmoji}</Text>
@@ -4175,24 +4794,13 @@ function ManagedAcceptedOfferCard({
         </View>
       </View>
 
-      {action && onUpdateStatus ? (
-        <TouchableOpacity
-          style={[cardSt.nextAction, { backgroundColor: meta.color + '18' }]}
-          onPress={() => onUpdateStatus(offer.id, action.next)}
-          activeOpacity={0.85}
-        >
-          <Text style={[cardSt.nextActionText, { color: meta.color }]}>{action.label}</Text>
-          <Text style={[cardSt.nextActionArrow, { color: meta.color }]}>›</Text>
-        </TouchableOpacity>
-      ) : (
-        <View style={[cardSt.nextAction, { backgroundColor: meta.color + '18' }]}>
-          <Text style={[cardSt.nextActionText, { color: meta.color }]}>
-            {status === 'DELIVERED' ? 'Completed order moved to history' : 'Buyer completed demo payment and confirmed this order'}
-          </Text>
-          <Text style={[cardSt.nextActionArrow, { color: meta.color }]}>✓</Text>
-        </View>
-      )}
-    </View>
+      <View style={[cardSt.nextAction, { backgroundColor: meta.color + '18' }]}>
+        <Text style={[cardSt.nextActionText, { color: meta.color }]}>
+          {meta.next ? meta.nextLabel : status === 'DELIVERED' ? 'Completed order moved to history' : 'Buyer completed demo payment and confirmed this order'}
+        </Text>
+        <Text style={[cardSt.nextActionArrow, { color: meta.color }]}>{meta.next ? '›' : '✓'}</Text>
+      </View>
+    </Wrapper>
   );
 }
 
@@ -4223,8 +4831,14 @@ function OrderCard({ order, onPress }: { order: OrderItem; onPress: () => void }
   );
 }
 
-function StatusPill({ status }: { status: string }) {
-  const meta = ORDER_STATUS_META[status] ?? { label: status, color: C.warmGray, bg: C.cream };
+function StatusPill({
+  status,
+  overrideMeta,
+}: {
+  status: string;
+  overrideMeta?: { label: string; color: string; bg: string };
+}) {
+  const meta = overrideMeta ?? ORDER_STATUS_META[status] ?? { label: status, color: C.warmGray, bg: C.cream };
   return (
     <View style={[{ backgroundColor: meta.bg, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }]}>
       <Text style={{ fontSize: 9, fontWeight: '700', color: meta.color, textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -4388,11 +5002,22 @@ const homeSt = StyleSheet.create({
   todayBadge:      { width: 68, height: 68, borderRadius: 20, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: C.accentStrong },
   todayNumber:     { fontSize: 28, fontWeight: '900', color: C.mint, lineHeight: 32 },
   todayLabel:      { fontSize: 9, fontWeight: '800', color: C.mint, letterSpacing: 1 },
+  // Home tabs (Active Orders / Request Board)
+  tabBar:            { flexDirection: 'row', backgroundColor: '#E9EEE7', borderRadius: 22, padding: 4, marginBottom: 16, position: 'relative', overflow: 'hidden' },
+  tabSlider:         { position: 'absolute', top: 4, bottom: 4, left: 2, backgroundColor: C.white, borderRadius: 18, shadowColor: C.shadow, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 1, shadowRadius: 10, elevation: 2 },
+  tabBtn:            { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 13, zIndex: 1 },
+  tabText:           { fontSize: 13, fontWeight: '700', color: '#8B948B' },
+  tabTextActive:     { color: '#1A2620' },
+  tabBadge:          { minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, backgroundColor: '#D8E2D8', alignItems: 'center', justifyContent: 'center' },
+  tabBadgeActive:    { backgroundColor: C.accentStrong },
+  tabBadgeText:      { fontSize: 10, fontWeight: '800', color: '#6B776B' },
+  tabBadgeTextActive:{ color: C.mint },
   // Sections
   section:       { marginBottom: 8 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   sectionTitle:  { fontSize: 18, fontWeight: '800', color: '#1A2620', letterSpacing: -0.3 },
   seeAll:        { fontSize: 12, color: C.mint, fontWeight: '600' },
+  historyLink:   { alignItems: 'center', paddingVertical: 14 },
   badge:         { backgroundColor: C.accentStrong, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 50 },
   badgeText:     { fontSize: 11, fontWeight: '700', color: C.mint },
   // Request board
@@ -4498,6 +5123,10 @@ const odSt = StyleSheet.create({
   buyerActionText:{ fontSize: 11, fontWeight: '700', color: C.ink },
   callBtn:      { backgroundColor: C.mintLight, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 8 },
   callBtnText:  { fontSize: 12, fontWeight: '700', color: C.mint },
+  mapCard:      { backgroundColor: C.white, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: C.border, marginBottom: 12 },
+  mapTitle:     { fontSize: 13, fontWeight: '700', color: C.ink, marginBottom: 10 },
+  mapLoading:   { height: 140, alignItems: 'center', justifyContent: 'center' },
+  mapFrame:     { height: 140, borderRadius: 12, overflow: 'hidden' },
   timelineCard: { backgroundColor: C.white, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: C.border, marginBottom: 12 },
   timelineTitle:{ fontSize: 13, fontWeight: '700', color: C.ink, marginBottom: 14 },
   timerBanner:  { alignSelf: 'flex-start', backgroundColor: C.paleYellow, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 12 },
@@ -4515,11 +5144,15 @@ const odSt = StyleSheet.create({
   reviewCard:   { backgroundColor: C.paleYellow, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#F0E0A0', marginBottom: 14 },
   reviewTitle:  { fontSize: 13, fontWeight: '700', color: C.ink, marginBottom: 8 },
   reviewComment:{ fontSize: 12, color: C.warmGray, fontStyle: 'italic', marginTop: 6 },
-  actionBtn:    { borderRadius: 14, paddingVertical: 15, alignItems: 'center', marginBottom: 10, shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.25, shadowRadius: 10, elevation: 3 },
-  actionBtnText:{ color: C.white, fontSize: 16, fontWeight: '700' },
-  cancelBtn:    { paddingVertical: 12, borderRadius: 12, borderWidth: 1.5, borderColor: C.red, alignItems: 'center', marginBottom: 16 },
-  cancelBtnText:{ fontSize: 14, fontWeight: '600', color: C.red },
   orderedAt:    { textAlign: 'center', fontSize: 11, color: C.warmGray },
+  offerNote:    { fontSize: 12, color: C.warmGray, lineHeight: 18, backgroundColor: C.paleYellow, borderRadius: 12, padding: 12, marginBottom: 12 },
+});
+
+const swipeSt = StyleSheet.create({
+  track:      { height: 60, borderRadius: 30, justifyContent: 'center', marginBottom: 10, overflow: 'hidden' },
+  trackLabel: { textAlign: 'center', fontSize: 14, fontWeight: '700' },
+  thumb:      { position: 'absolute', left: 4, top: 4, width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', shadowColor: 'rgba(0,0,0,0.25)', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 1, shadowRadius: 6, elevation: 4 },
+  thumbArrow: { color: C.white, fontSize: 24, fontWeight: '800' },
 });
 
 const earnSt = StyleSheet.create({
@@ -4697,6 +5330,7 @@ const todaySt = StyleSheet.create({
   liveText: { fontSize: 10, fontWeight: '700', color: C.mint },
   liveTextLive: { color: '#4ADE80', fontWeight: '900', letterSpacing: 0.5 },
   liveBadgeLive: { backgroundColor: 'rgba(74,222,128,0.18)', borderWidth: 1, borderColor: 'rgba(74,222,128,0.4)' },
+  liveSwitch: { transform: [{ scale: 0.8 }] },
   dishCardPhoto: { width: 64, height: 64, borderRadius: 14 },
   dishCardRight: { flex: 1, padding: 16 },
   dishCardTopRow: {
@@ -4954,6 +5588,8 @@ const mSt = StyleSheet.create({
     shadowOpacity: 0.3, shadowRadius: 10, elevation: 6,
   },
   readyBtnText: { fontSize: 15, fontWeight: '900', color: C.white, letterSpacing: 0.2 },
+  cancelLink: { alignItems: 'center', marginTop: -14, marginBottom: 24 },
+  cancelLinkText: { fontSize: 13, color: C.warmGray, fontWeight: '600' },
 
   // ── Go Live ───────────────────────────────────────────────────────────
   goLiveHeader: {
@@ -5184,6 +5820,12 @@ const offerSt = StyleSheet.create({
   counterBannerMuted: { backgroundColor: C.paleGreen, borderLeftColor: C.mint },
   counterBannerText: { fontSize: 12, color: C.spice, fontWeight: '600' },
   counterBannerTextMuted: { color: C.mintDark },
+  holdBanner: {
+    backgroundColor: C.paleBlue, borderRadius: 10,
+    paddingHorizontal: 12, paddingVertical: 8, marginBottom: 8,
+    borderLeftWidth: 3, borderLeftColor: '#4F6CF5',
+  },
+  holdBannerText: { fontSize: 12, color: '#3450C7', fontWeight: '600' },
   message: { fontSize: 13, color: C.warmGray, fontStyle: 'italic', marginBottom: 10 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 4 },
   actionBtn: { flex: 1, borderRadius: 12, paddingVertical: 10, alignItems: 'center' },
@@ -5194,12 +5836,14 @@ const offerSt = StyleSheet.create({
   actionAccept: { backgroundColor: C.mintLight, borderWidth: 1, borderColor: C.accentStrong },
   actionAcceptWide: { flex: 2 },
   actionAcceptText: { fontSize: 13, fontWeight: '700', color: C.mintDark },
+  actionHint: { marginTop: 10, fontSize: 12, lineHeight: 18, color: C.warmGray },
 
   // Counter modal
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   sheet: { backgroundColor: C.white, borderRadius: 24, padding: 24, width: '100%' },
   sheetTitle: { fontSize: 20, fontWeight: '900', color: C.ink, marginBottom: 4 },
   sheetSub: { fontSize: 13, color: C.warmGray, marginBottom: 18, lineHeight: 18 },
+  limitNote: { fontSize: 12, lineHeight: 18, color: C.warmGray, backgroundColor: '#FFF7E8', borderRadius: 12, padding: 10, marginBottom: 12 },
   fieldLabel: { fontSize: 10, fontWeight: '800', color: C.warmGray, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6, marginTop: 14 },
   input: {
     backgroundColor: C.bg, borderRadius: 12, borderWidth: 1, borderColor: C.border,

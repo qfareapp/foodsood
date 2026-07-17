@@ -6,10 +6,14 @@ import { AuthRequest, requireAuth } from '../middleware/auth';
 
 const router = Router();
 const HOLD_MINUTES = 20;
+const MAX_CHEF_COUNTERS = 1;
+const MAX_BUYER_COUNTERS = 1;
 
 const OFFER_STATUSES = ['PENDING', 'COUNTERED', 'HOLD', 'ADVANCE_PAID', 'PAID', 'REJECTED', 'EXPIRED'] as const;
 type OfferStatus = typeof OFFER_STATUSES[number];
-const DIRECT_ORDER_STATUSES = ['CONFIRMED', 'OUT_FOR_DELIVERY', 'DELIVERED'] as const;
+const DIRECT_ORDER_STATUSES = ['CONFIRMED', 'COOKING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED'] as const;
+const DIRECT_ORDER_PIPELINE_DELIVERY = ['CONFIRMED', 'COOKING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED'] as const;
+const DIRECT_ORDER_PIPELINE_PICKUP = ['CONFIRMED', 'COOKING', 'READY', 'DELIVERED'] as const;
 
 const createOfferSchema = z.object({
   dishId: z.string().min(1),
@@ -40,8 +44,10 @@ const paySchema = z.object({
 
 const reviewSchema = z.object({
   buyerToken: z.string().uuid(),
-  rating: z.number().int().min(1).max(5).optional(),
-  comment: z.string().max(500).optional(),
+  chefRating: z.number().int().min(1).max(5),
+  chefComment: z.string().max(500).optional(),
+  foodRating: z.number().int().min(1).max(5),
+  foodComment: z.string().max(500).optional(),
 });
 
 const parseStatuses = (rawStatuses: unknown): OfferStatus[] => {
@@ -64,7 +70,7 @@ async function expireHeldOffers() {
   });
 }
 
-async function getReservedPlates(dishId: string) {
+async function getReservedPlates(dishId: string, restockedAt: Date | null) {
   const reserved = await prisma.dishOffer.findMany({
     where: {
       dishId,
@@ -73,10 +79,14 @@ async function getReservedPlates(dishId: string) {
         { status: 'HOLD', holdUntil: { gt: new Date() } },
       ],
     },
-    select: { plates: true },
+    select: { plates: true, createdAt: true },
   });
 
-  return reserved.reduce((sum, offer) => sum + offer.plates, 0);
+  // Offers placed before the dish's last restock no longer count against
+  // its current (reset) plate count.
+  return reserved
+    .filter((offer) => !restockedAt || offer.createdAt >= restockedAt)
+    .reduce((sum, offer) => sum + offer.plates, 0);
 }
 
 function holdExpiry() {
@@ -132,7 +142,7 @@ async function appendDishReviewToChefSpeciality(offer: {
 }, review: { rating: number; comment?: string }) {
   const chef = await prisma.user.findUnique({
     where: { id: offer.chefId },
-    select: { specialityDishes: true, rating: true, ratingCount: true },
+    select: { specialityDishes: true },
   });
   if (!chef) return;
 
@@ -153,15 +163,10 @@ async function appendDishReviewToChefSpeciality(offer: {
     };
   });
 
-  const overallCount = chef.ratingCount + 1;
-  const overallAverage = ((chef.rating * chef.ratingCount) + review.rating) / overallCount;
-
   await prisma.user.update({
     where: { id: offer.chefId },
     data: {
       specialityDishes: JSON.stringify(nextSpecialities),
-      rating: Math.round(overallAverage * 10) / 10,
-      ratingCount: overallCount,
     },
   });
 }
@@ -181,7 +186,7 @@ router.post('/', async (req, res) => {
   if (!dish) { res.status(404).json({ error: 'Dish not found' }); return; }
   if (dish.chefId !== chefId) { res.status(400).json({ error: 'Chef/dish mismatch' }); return; }
 
-  const reservedPlates = await getReservedPlates(dishId);
+  const reservedPlates = await getReservedPlates(dishId, dish.restockedAt);
   const availablePlates = Math.max(0, dish.plates - reservedPlates);
   if (plates > availablePlates) {
     res.status(409).json({ error: `Only ${availablePlates} plate${availablePlates === 1 ? '' : 's'} available right now` });
@@ -204,6 +209,8 @@ router.post('/', async (req, res) => {
       agreedPrice: null,
       holdUntil: null,
       lastOfferBy: 'BUYER',
+      chefCounterCount: 0,
+      buyerCounterCount: 0,
     },
   });
 
@@ -235,6 +242,7 @@ router.patch('/:id/buyer-counter', async (req, res) => {
   if (!offer) { res.status(404).json({ error: 'Offer not found' }); return; }
   if (offer.buyerToken !== parsed.data.buyerToken) { res.status(403).json({ error: 'Forbidden' }); return; }
   if (offer.status !== 'COUNTERED') { res.status(400).json({ error: 'No counter to respond to' }); return; }
+  if (offer.buyerCounterCount >= MAX_BUYER_COUNTERS) { res.status(409).json({ error: 'Buyer counter limit reached for this offer' }); return; }
   if (offer.counterPrice != null && parsed.data.newPrice >= offer.counterPrice) {
     res.status(400).json({ error: `Counter must be below ₹${offer.counterPrice}` }); return;
   }
@@ -245,6 +253,7 @@ router.patch('/:id/buyer-counter', async (req, res) => {
       offerPrice: parsed.data.newPrice,
       status: 'PENDING',
       lastOfferBy: 'BUYER',
+      buyerCounterCount: { increment: 1 },
     },
   });
   res.json(updated);
@@ -527,9 +536,11 @@ router.patch('/:id/order-status', requireAuth, async (req: AuthRequest, res) => 
   }
 
   const currentStatus = offer.orderStatus ?? 'CONFIRMED';
-  const allowed = offer.deliveryMode === 'delivery'
-    ? (currentStatus === 'CONFIRMED' ? ['OUT_FOR_DELIVERY'] : currentStatus === 'OUT_FOR_DELIVERY' ? ['DELIVERED'] : [])
-    : (currentStatus === 'CONFIRMED' ? ['DELIVERED'] : []);
+  const pipeline: readonly string[] = offer.deliveryMode === 'delivery'
+    ? DIRECT_ORDER_PIPELINE_DELIVERY
+    : DIRECT_ORDER_PIPELINE_PICKUP;
+  const currentIdx = pipeline.indexOf(currentStatus);
+  const allowed = currentIdx >= 0 && currentIdx < pipeline.length - 1 ? [pipeline[currentIdx + 1]] : [];
 
   if (!allowed.includes(parsed.data.status)) {
     res.status(409).json({ error: `Cannot transition from ${currentStatus} to ${parsed.data.status}`, allowed });
@@ -549,11 +560,6 @@ router.post('/:id/review', async (req, res) => {
   const parsed = reviewSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });
-    return;
-  }
-
-  if (!parsed.data.rating && !parsed.data.comment?.trim()) {
-    res.status(400).json({ error: 'Provide a rating, review text, or both' });
     return;
   }
 
@@ -578,16 +584,30 @@ router.post('/:id/review', async (req, res) => {
   const updated = await prisma.dishOffer.update({
     where: { id: offerId },
     data: {
-      reviewRating: parsed.data.rating ?? null,
-      reviewComment: parsed.data.comment?.trim() || null,
+      reviewRating: parsed.data.chefRating,
+      reviewComment: parsed.data.chefComment?.trim() || null,
       reviewedAt: new Date(),
     },
   });
 
-  if (parsed.data.rating) {
-    await appendDishReviewToChefSpeciality(offer, {
-      rating: parsed.data.rating,
-      comment: parsed.data.comment?.trim() || undefined,
+  await appendDishReviewToChefSpeciality(offer, {
+    rating: parsed.data.foodRating,
+    comment: parsed.data.foodComment?.trim() || undefined,
+  });
+
+  const chef = await prisma.user.findUnique({
+    where: { id: offer.chefId },
+    select: { rating: true, ratingCount: true },
+  });
+  if (chef) {
+    const overallCount = chef.ratingCount + 1;
+    const overallAverage = ((chef.rating * chef.ratingCount) + parsed.data.chefRating) / overallCount;
+    await prisma.user.update({
+      where: { id: offer.chefId },
+      data: {
+        rating: Math.round(overallAverage * 10) / 10,
+        ratingCount: overallCount,
+      },
     });
   }
 
@@ -658,9 +678,11 @@ router.patch('/:id/counter', requireAuth, async (req: AuthRequest, res) => {
   const offer = await prisma.dishOffer.findUnique({ where: { id: offerId } });
   if (!offer) { res.status(404).json({ error: 'Offer not found' }); return; }
   if (offer.chefId !== req.user!.userId) { res.status(403).json({ error: 'Forbidden' }); return; }
+  if (offer.status !== 'PENDING') { res.status(409).json({ error: 'Offer is not in a counterable state' }); return; }
 
   const parsed = counterSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
+  if (offer.chefCounterCount >= MAX_CHEF_COUNTERS) { res.status(409).json({ error: 'Chef counter limit reached for this offer' }); return; }
   if (offer.counterPrice != null && parsed.data.counterPrice >= offer.counterPrice) {
     res.status(400).json({ error: `Counter must be below ₹${offer.counterPrice}` }); return;
   }
@@ -672,6 +694,7 @@ router.patch('/:id/counter', requireAuth, async (req: AuthRequest, res) => {
       counterPrice: parsed.data.counterPrice,
       counterNote: parsed.data.counterNote ?? null,
       lastOfferBy: 'CHEF',
+      chefCounterCount: { increment: 1 },
     },
   });
   res.json(updated);

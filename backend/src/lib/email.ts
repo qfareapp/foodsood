@@ -2,15 +2,17 @@ import nodemailer from 'nodemailer';
 
 const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
-const transporter = nodemailer.createTransport({
-  host: process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
-  port: Number(process.env.BREVO_SMTP_PORT || 587),
-  secure: process.env.BREVO_SMTP_SECURE === 'true',
-  auth: {
-    user: process.env.BREVO_SMTP_LOGIN,
-    pass: process.env.BREVO_SMTP_KEY,
-  },
-});
+function createTransporter() {
+  return nodemailer.createTransport({
+    host: process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
+    port: Number(process.env.BREVO_SMTP_PORT || 587),
+    secure: process.env.BREVO_SMTP_SECURE === 'true',
+    auth: {
+      user: process.env.BREVO_SMTP_LOGIN,
+      pass: process.env.BREVO_SMTP_KEY,
+    },
+  });
+}
 
 function getFromDetails() {
   const fromEmail = process.env.BREVO_FROM_EMAIL || process.env.BREVO_SMTP_LOGIN;
@@ -61,15 +63,10 @@ async function sendViaBrevoApi(to: string, otp: string): Promise<void> {
   }
 }
 
-export async function sendOtpEmail(to: string, otp: string): Promise<void> {
-  if (process.env.BREVO_API_KEY) {
-    await sendViaBrevoApi(to, otp);
-    return;
-  }
-
+async function sendViaSmtp(to: string, otp: string): Promise<void> {
   const { fromEmail, fromName } = getFromDetails();
   const from = `"${fromName}" <${fromEmail}>`;
-  await transporter.sendMail({
+  await createTransporter().sendMail({
     from,
     to,
     subject: `${otp} is your FoodSood verification code`,
@@ -87,4 +84,32 @@ export async function sendOtpEmail(to: string, otp: string): Promise<void> {
     `,
     text: `Your FoodSood verification code is: ${otp}\n\nThis code expires in 10 minutes.`,
   });
+}
+
+export async function sendOtpEmail(to: string, otp: string): Promise<void> {
+  const errors: string[] = [];
+
+  if (process.env.BREVO_API_KEY) {
+    try {
+      await sendViaBrevoApi(to, otp);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(message);
+      console.error('Brevo API send failed, trying SMTP fallback:', message);
+    }
+  }
+
+  if (process.env.BREVO_SMTP_LOGIN && process.env.BREVO_SMTP_KEY) {
+    try {
+      await sendViaSmtp(to, otp);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(message);
+      console.error('Brevo SMTP send failed:', message);
+    }
+  }
+
+  throw new Error(errors.join(' | ') || 'No email transport is configured');
 }

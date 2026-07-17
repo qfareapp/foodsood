@@ -71,6 +71,75 @@ function getBuyerCashfreeCustomer(input: {
   };
 }
 
+type SpecialityDishReview = {
+  buyerName: string;
+  rating: number;
+  comment?: string;
+  createdAt: string;
+};
+
+type SpecialityDishRecord = {
+  dishName: string;
+  description: string;
+  imageUrl: string;
+  lastSoldPrice: number;
+  unitsSold: number;
+  cuisine: string;
+  tags: string[];
+  notes: string;
+  emoji: string;
+  portionType: 'quantity' | 'pieces';
+  portionValue: number;
+  portionUnit: string;
+  readyInMinutes: number;
+  ratingAverage?: number;
+  ratingCount?: number;
+  recentReviews?: SpecialityDishReview[];
+};
+
+function normaliseDishKey(name: string) {
+  return name.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+async function appendDishReviewToChefSpeciality(input: {
+  chefId: string;
+  dishName: string;
+  buyerName: string;
+}, review: { rating: number; comment?: string }) {
+  const chef = await prisma.user.findUnique({
+    where: { id: input.chefId },
+    select: { specialityDishes: true },
+  });
+  if (!chef?.specialityDishes) return;
+
+  const currentSpecialities = JSON.parse(chef.specialityDishes) as SpecialityDishRecord[];
+  const nextSpecialities = currentSpecialities.map((item) => {
+    if (normaliseDishKey(item.dishName) !== normaliseDishKey(input.dishName)) return item;
+    const nextCount = (item.ratingCount ?? 0) + 1;
+    const nextAverage = (((item.ratingAverage ?? 0) * (item.ratingCount ?? 0)) + review.rating) / nextCount;
+    const recentReviews = [
+      {
+        buyerName: input.buyerName,
+        rating: review.rating,
+        comment: review.comment,
+        createdAt: new Date().toISOString(),
+      },
+      ...(item.recentReviews ?? []),
+    ].slice(0, 5);
+    return {
+      ...item,
+      ratingCount: nextCount,
+      ratingAverage: Math.round(nextAverage * 10) / 10,
+      recentReviews,
+    };
+  });
+
+  await prisma.user.update({
+    where: { id: input.chefId },
+    data: { specialityDishes: JSON.stringify(nextSpecialities) },
+  });
+}
+
 async function expireHeldOrders() {
   const expired = await prisma.order.findMany({
     where: {
@@ -574,7 +643,7 @@ router.post('/:id/review', requireAuth, async (req: AuthRequest, res) => {
   if (!orderId) return res.status(400).json({ error: 'Order id required' });
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    include: { review: true },
+    include: { review: true, request: { select: { dishName: true } }, buyer: { select: { name: true } } },
   });
   if (!order) {
     res.status(404).json({ error: 'Order not found' });
@@ -609,8 +678,10 @@ router.post('/:id/review', requireAuth, async (req: AuthRequest, res) => {
   }
 
   const schema = z.object({
-    rating: z.number().int().min(1).max(5),
-    comment: z.string().max(500).optional(),
+    chefRating: z.number().int().min(1).max(5),
+    chefComment: z.string().max(500).optional(),
+    foodRating: z.number().int().min(1).max(5),
+    foodComment: z.string().max(500).optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -623,10 +694,19 @@ router.post('/:id/review', requireAuth, async (req: AuthRequest, res) => {
       orderId: order.id,
       reviewerId: req.user!.userId,
       chefId: order.chefId,
-      rating: parsed.data.rating,
-      comment: parsed.data.comment,
+      rating: parsed.data.chefRating,
+      comment: parsed.data.chefComment?.trim() || null,
       isHidden: false,
     },
+  });
+
+  await appendDishReviewToChefSpeciality({
+    chefId: order.chefId,
+    dishName: order.request.dishName,
+    buyerName: order.buyer.name || 'Buyer',
+  }, {
+    rating: parsed.data.foodRating,
+    comment: parsed.data.foodComment?.trim() || undefined,
   });
 
   // Recompute chef's aggregate rating

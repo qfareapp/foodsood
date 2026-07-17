@@ -38,6 +38,7 @@ function serializeDish(
     readyInMinutes: number;
     notes: string | null;
     imageUrl: string | null;
+    restockedAt?: Date | null;
     createdAt: Date;
     updatedAt: Date;
     chef?: {
@@ -49,6 +50,7 @@ function serializeDish(
       rating: number;
       ratingCount: number;
       totalOrders: number;
+      specialityDishes?: string | null;
       lat: number | null;
       lng: number | null;
     };
@@ -61,17 +63,41 @@ function serializeDish(
   const distanceKm = viewerCoords && dish.chef?.lat != null && dish.chef?.lng != null
     ? Math.round(haversineKm(viewerCoords.lat, viewerCoords.lng, dish.chef.lat, dish.chef.lng) * 10) / 10
     : null;
+  const specialityDishes = dish.chef?.specialityDishes ? JSON.parse(dish.chef.specialityDishes) as Array<{
+    dishName: string;
+    ratingAverage?: number;
+    ratingCount?: number;
+  }> : [];
+  const dishReview = specialityDishes.find((item) => item.dishName.trim().replace(/\s+/g, ' ').toLowerCase() === dish.dishName.trim().replace(/\s+/g, ' ').toLowerCase());
 
   return {
     ...dish,
     tags: JSON.parse(dish.tags) as string[],
     plates: Math.max(0, dish.plates - bookedPlates),
     bookedPlates,
-    status: remainingMinutes === 0 ? 'ready' : 'cooking',
+    status: dish.imageUrl ? 'ready' : 'cooking',
     remainingMinutes,
     readyAt: readyAt.toISOString(),
     distanceKm,
+    dishRatingAverage: dishReview?.ratingAverage ?? 0,
+    dishRatingCount: dishReview?.ratingCount ?? 0,
   };
+}
+
+// A dish's plate count "resets" whenever the chef restocks it (goes live
+// again with a fresh quantity) — offers placed before that restock no
+// longer count against the new capacity.
+function computeBookedByDish(
+  dishes: Array<{ id: string; restockedAt: Date | null }>,
+  offers: Array<{ dishId: string; plates: number; createdAt: Date }>,
+): Record<string, number> {
+  const cutoffByDish = new Map(dishes.map((dish) => [dish.id, dish.restockedAt]));
+  return offers.reduce<Record<string, number>>((acc, offer) => {
+    const cutoff = cutoffByDish.get(offer.dishId);
+    if (cutoff && offer.createdAt < cutoff) return acc;
+    acc[offer.dishId] = (acc[offer.dishId] ?? 0) + offer.plates;
+    return acc;
+  }, {});
 }
 
 router.get('/', optionalAuth, async (req: AuthRequest, res) => {
@@ -93,6 +119,7 @@ router.get('/', optionalAuth, async (req: AuthRequest, res) => {
           rating: true,
           ratingCount: true,
           totalOrders: true,
+          specialityDishes: true,
           lat: true,
           lng: true,
           isActive: true,
@@ -112,12 +139,9 @@ router.get('/', optionalAuth, async (req: AuthRequest, res) => {
         { status: 'HOLD', holdUntil: { gt: new Date() } },
       ],
     },
-    select: { dishId: true, plates: true },
+    select: { dishId: true, plates: true, createdAt: true },
   }) : [];
-  const bookedByDish = activeOffers.reduce<Record<string, number>>((acc, offer) => {
-    acc[offer.dishId] = (acc[offer.dishId] ?? 0) + offer.plates;
-    return acc;
-  }, {});
+  const bookedByDish = computeBookedByDish(dishes, activeOffers);
 
   const viewerCoords = viewerLat != null && viewerLng != null ? { lat: viewerLat, lng: viewerLng } : null;
 
@@ -155,14 +179,29 @@ router.get('/mine', requireAuth, async (req: AuthRequest, res) => {
         { status: 'HOLD', holdUntil: { gt: new Date() } },
       ],
     },
-    select: { dishId: true, plates: true },
+    select: { dishId: true, plates: true, createdAt: true },
   }) : [];
-  const bookedByDish = activeOffers.reduce<Record<string, number>>((acc, offer) => {
-    acc[offer.dishId] = (acc[offer.dishId] ?? 0) + offer.plates;
-    return acc;
-  }, {});
+  const bookedByDish = computeBookedByDish(dishes, activeOffers);
 
-  res.json(dishes.map((dish) => serializeDish(dish, undefined, bookedByDish[dish.id] ?? 0)));
+  // Auto-offline: a live dish that's sold out of plates drops off the board
+  // and its listed quantity resets to 0, until the chef manually goes live
+  // again with a fresh plate count (+ timer + photo).
+  const soldOutIds = dishes
+    .filter((dish) => dish.imageUrl && Math.max(0, dish.plates - (bookedByDish[dish.id] ?? 0)) <= 0)
+    .map((dish) => dish.id);
+  if (soldOutIds.length > 0) {
+    await prisma.chefDish.updateMany({
+      where: { id: { in: soldOutIds } },
+      data: { imageUrl: null, plates: 0 },
+    });
+  }
+  const soldOutSet = new Set(soldOutIds);
+
+  res.json(dishes.map((dish) => serializeDish(
+    soldOutSet.has(dish.id) ? { ...dish, imageUrl: null, plates: 0 } : dish,
+    undefined,
+    bookedByDish[dish.id] ?? 0,
+  )));
 });
 
 router.post('/', requireAuth, async (req: AuthRequest, res) => {
@@ -193,6 +232,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res) => {
 const updateDishSchema = z.object({
   extensionMinutes: z.number().int().min(1).max(120).optional(),
   imageUrl: z.string().optional().nullable(),
+  plates: z.number().int().min(1).max(500).optional(),
 });
 
 router.patch('/:id', requireAuth, async (req: AuthRequest, res) => {
@@ -205,8 +245,8 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res) => {
   const parsed = updateDishSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
 
-  const { extensionMinutes, imageUrl } = parsed.data;
-  const updateData: { readyInMinutes?: number; imageUrl?: string | null } = {};
+  const { extensionMinutes, imageUrl, plates } = parsed.data;
+  const updateData: { readyInMinutes?: number; imageUrl?: string | null; plates?: number; restockedAt?: Date } = {};
 
   if (extensionMinutes != null) {
     // Push readyAt to (now + extensionMinutes): readyAt = createdAt + readyInMinutes*60s
@@ -220,6 +260,12 @@ router.patch('/:id', requireAuth, async (req: AuthRequest, res) => {
     } else {
       updateData.imageUrl = imageUrl;
     }
+  }
+  if (plates != null) {
+    // Setting a fresh plate count is a restock — plates sold before this
+    // point no longer count against the new total.
+    updateData.plates = plates;
+    updateData.restockedAt = new Date();
   }
 
   const updated = await prisma.chefDish.update({ where: { id: dishId }, data: updateData });

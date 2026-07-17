@@ -4,9 +4,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Location from 'expo-location';
 import * as SecureStore from 'expo-secure-store';
 import Slider from '@react-native-community/slider';
-import { CFPaymentGatewayService, type CFCallback, CFErrorResponse } from 'react-native-cashfree-pg-sdk';
 import { WebView } from 'react-native-webview';
-import { CFEnvironment, CFSession } from 'cashfree-pg-api-contract';
 import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
@@ -14,10 +12,12 @@ import {
   type AppStateStatus,
   Animated,
   Dimensions,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Linking,
   Modal,
+  NativeModules,
   Platform,
   RefreshControl,
   ScrollView,
@@ -49,8 +49,8 @@ const C = {
 
 const LOCAL_API_BASE =
   Platform.OS === 'web'
-    ? 'http://localhost:3000/api'
-    : 'http://192.168.15.138:3000/api';
+    ? 'http://localhost:3001/api'
+    : 'http://192.168.16.24:3001/api';
 const RENDER_API_BASE = 'https://foodsood.onrender.com/api';
 const API_BASE = __DEV__ ? LOCAL_API_BASE : RENDER_API_BASE;
 const PRIVACY_POLICY_URL = `${API_BASE.replace(/\/api$/, '')}/privacy-policy`;
@@ -189,13 +189,36 @@ const MAX_REQUEST_QUOTES_PER_SIDE = 2;
 const REVIEW_STORE_KEY = 'buyer_order_review_state';
 const SAVED_CHEFS_STORE_KEY = 'buyer_saved_chefs';
 const SEEN_NOTIFICATIONS_STORE_KEY = 'buyer_seen_notifications';
+const ANNOUNCED_NOTIFICATIONS_STORE_KEY = 'buyer_announced_notifications';
 
 type ReviewPromptState = Record<string, {
-  rating?: number;
-  comment?: string;
+  foodRating?: number;
+  foodComment?: string;
+  chefRating?: number;
+  chefComment?: string;
   submittedAt?: string;
   snoozeUntil?: string;
 }>;
+
+type ReviewPromptTarget =
+  | {
+    kind: 'offer';
+    key: string;
+    id: string;
+    dishName: string;
+    dishEmoji: string;
+    chefName: string;
+    deliveredAt: string;
+  }
+  | {
+    kind: 'request';
+    key: string;
+    id: string;
+    dishName: string;
+    dishEmoji: string;
+    chefName: string;
+    deliveredAt: string;
+  };
 
 interface DishOfferItem {
   id: string;
@@ -215,6 +238,8 @@ interface DishOfferItem {
   status: 'PENDING' | 'COUNTERED' | 'HOLD' | 'ADVANCE_PAID' | 'PAID' | 'REJECTED' | 'EXPIRED';
   paymentType?: 'FULL' | 'ADVANCE' | null;
   advancePaid?: number | null;
+  chefCounterCount?: number;
+  buyerCounterCount?: number;
   counterPrice?: number | null;
   counterNote?: string | null;
   lastOfferBy: 'BUYER' | 'CHEF';
@@ -344,6 +369,83 @@ interface CashfreeSessionResponse {
   environment: 'SANDBOX' | 'PRODUCTION';
   amount: number;
   paymentType: 'full' | 'advance' | 'balance';
+}
+
+type CashfreeCallback = {
+  onVerify: (orderID: string) => void;
+  onError: (error: unknown, orderID: string) => void;
+};
+
+type CashfreeSdk = {
+  available: boolean;
+  doWebPayment?: (session: unknown) => void;
+  setCallback?: (callback: CashfreeCallback) => void;
+  removeCallback?: () => void;
+  createSession?: (
+    paymentSessionId: string,
+    orderId: string,
+    environment: CashfreeSessionResponse['environment'],
+  ) => unknown;
+  getErrorMessage?: (error: unknown) => string | null;
+};
+
+function loadCashfreeSdk(): CashfreeSdk {
+  if (Platform.OS === 'web') return { available: false };
+  try {
+    const nativeModule = NativeModules.CashfreePgApi;
+    const sdk = require('react-native-cashfree-pg-sdk') as {
+      CFPaymentGatewayService?: {
+        doWebPayment(session: unknown): void;
+        setCallback(callback: CashfreeCallback): void;
+        removeCallback(): void;
+      };
+      CFErrorResponse?: new (...args: unknown[]) => { getMessage(): string };
+    };
+    const contract = require('cashfree-pg-api-contract') as {
+      CFEnvironment?: { PRODUCTION: unknown; SANDBOX: unknown };
+      CFSession?: new (paymentSessionId: string, orderId: string, environment: unknown) => unknown;
+    };
+    const service = sdk.CFPaymentGatewayService;
+    const errorCtor = sdk.CFErrorResponse;
+    const sessionCtor = contract.CFSession;
+    const environmentMap = contract.CFEnvironment;
+    if (!nativeModule || !service || !sessionCtor || !environmentMap) return { available: false };
+    return {
+      available: true,
+      doWebPayment: (session) => service.doWebPayment(session),
+      setCallback: (callback) => service.setCallback(callback),
+      removeCallback: () => service.removeCallback(),
+      createSession: (paymentSessionId, orderId, environment) =>
+        new sessionCtor(
+          paymentSessionId,
+          orderId,
+          environment === 'PRODUCTION' ? environmentMap.PRODUCTION : environmentMap.SANDBOX,
+        ),
+      getErrorMessage: (error) =>
+        errorCtor && error instanceof errorCtor ? error.getMessage() : null,
+    };
+  } catch {
+    return { available: false };
+  }
+}
+
+const cashfreeSdk = loadCashfreeSdk();
+
+function isCashfreeUsable(): boolean {
+  return Boolean(
+    cashfreeSdk.available &&
+    cashfreeSdk.doWebPayment &&
+    cashfreeSdk.setCallback &&
+    cashfreeSdk.removeCallback &&
+    cashfreeSdk.createSession,
+  );
+}
+
+function showCashfreeUnavailable(): void {
+  Alert.alert(
+    'Cashfree unavailable',
+    'This flow needs a native development build with the Cashfree SDK linked. Use an Android or iOS dev build, not Expo Go.',
+  );
 }
 
 interface BuyerNotificationCard {
@@ -482,6 +584,122 @@ function getNotificationVersionKey(item: BuyerNotificationCard): string {
   return `${item.id}:${item.activityAt}`;
 }
 
+function shouldAnnounceBuyerNotification(item: BuyerNotificationCard): boolean {
+  if (item.rawOffer) {
+    const offer = item.rawOffer;
+    if (offer.status === 'COUNTERED' && offer.lastOfferBy === 'CHEF') return true;
+    if (offer.status === 'HOLD') return true;
+    if (offer.status === 'ADVANCE_PAID' || offer.status === 'PAID') return true;
+    const orderStatus = getOfferOrderStatus(offer);
+    return orderStatus === 'OUT_FOR_DELIVERY' || orderStatus === 'DELIVERED';
+  }
+
+  if (item.rawRequest) {
+    const request = item.rawRequest;
+    const orderStatus = request.order?.status ?? null;
+    const paymentStatus = request.order?.paymentStatus ?? null;
+    const hasChefCounter = (request.quotes ?? []).some((quote) => quote.status === 'COUNTERED');
+    if (paymentStatus === 'HOLD' || paymentStatus === 'ADVANCE_PAID') return true;
+    if (orderStatus === 'COOKING' || orderStatus === 'READY' || orderStatus === 'OUT_FOR_DELIVERY' || orderStatus === 'DELIVERED') return true;
+    return hasChefCounter || (request.quotesCount ?? 0) > 0;
+  }
+
+  return false;
+}
+
+function getBuyerNotificationContent(item: BuyerNotificationCard): { title: string; body: string } {
+  if (item.rawOffer) {
+    const offer = item.rawOffer;
+    if (offer.status === 'COUNTERED' && offer.lastOfferBy === 'CHEF') {
+      return {
+        title: `Chef countered on ${offer.dishName}`,
+        body: `New counter offer for ₹${offer.counterPrice ?? offer.offerPrice} per plate. Review and respond.`,
+      };
+    }
+    if (offer.status === 'HOLD') {
+      return {
+        title: `${offer.dishName} is awaiting payment`,
+        body: `Chef accepted your offer. Complete payment before the hold expires.`,
+      };
+    }
+    const orderStatus = getOfferOrderStatus(offer);
+    if (orderStatus === 'OUT_FOR_DELIVERY') {
+      return {
+        title: `${offer.dishName} is on the way`,
+        body: offer.deliveryMode === 'delivery' ? 'Your today-board order is out for delivery.' : 'Your today-board order is ready for pickup.',
+      };
+    }
+    if (orderStatus === 'DELIVERED') {
+      return {
+        title: `${offer.dishName} was delivered`,
+        body: 'Your today-board order has been completed.',
+      };
+    }
+    return {
+      title: `${offer.dishName} order confirmed`,
+      body: 'Payment was received and the chef has started processing your today-board order.',
+    };
+  }
+
+  if (item.rawRequest) {
+    const request = item.rawRequest;
+    const orderStatus = request.order?.status ?? null;
+    const paymentStatus = request.order?.paymentStatus ?? null;
+    const counterQuote = (request.quotes ?? []).find((quote) => quote.status === 'COUNTERED') ?? null;
+    if (paymentStatus === 'HOLD') {
+      return {
+        title: `${request.dishName} is awaiting payment`,
+        body: 'A chef accepted your request. Complete payment to confirm the order.',
+      };
+    }
+    if (orderStatus === 'COOKING') {
+      return {
+        title: `${request.dishName} is being cooked`,
+        body: `Your order is now cooking${request.order?.readyAt ? ` and will be ready in ${countdownTo(request.order.readyAt) ?? 'soon'}` : '.'}`,
+      };
+    }
+    if (orderStatus === 'READY') {
+      return {
+        title: `${request.dishName} is ready`,
+        body: request.delivery === 'pickup' ? 'Your order is ready for pickup.' : 'Your chef marked the order ready for delivery.',
+      };
+    }
+    if (orderStatus === 'OUT_FOR_DELIVERY') {
+      return {
+        title: `${request.dishName} is on the way`,
+        body: 'Your request order is out for delivery.',
+      };
+    }
+    if (orderStatus === 'DELIVERED') {
+      return {
+        title: `${request.dishName} was delivered`,
+        body: 'Your request order has been completed.',
+      };
+    }
+    if (paymentStatus === 'ADVANCE_PAID') {
+      return {
+        title: `${request.dishName} order confirmed`,
+        body: 'Advance payment was received and your request order is confirmed.',
+      };
+    }
+    if (counterQuote) {
+      return {
+        title: `Chef countered on ${request.dishName}`,
+        body: `A chef sent a counter offer for ₹${counterQuote.counterOffer ?? counterQuote.price}.`,
+      };
+    }
+    return {
+      title: `New offer for ${request.dishName}`,
+      body: `${request.quotesCount ?? 1} chef${(request.quotesCount ?? 1) > 1 ? 's have' : ' has'} responded to your request.`,
+    };
+  }
+
+  return {
+    title: item.name,
+    body: item.status,
+  };
+}
+
 function getOfferOrderStatus(offer: DishOfferItem): 'CONFIRMED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' {
   if (offer.orderStatus === 'OUT_FOR_DELIVERY' || offer.orderStatus === 'DELIVERED') return offer.orderStatus;
   return 'CONFIRMED';
@@ -522,6 +740,92 @@ function distanceKmBetween(lat1: number, lng1: number, lat2: number, lng2: numbe
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function isRunningInExpoGo(): boolean {
+  const exponentConstants = (
+    (NativeModules as {
+      ExponentConstants?: { appOwnership?: string };
+      NativeUnimoduleProxy?: {
+        modulesConstants?: {
+          ExponentConstants?: { appOwnership?: string };
+        };
+      };
+    }).ExponentConstants
+    ?? (NativeModules as {
+      NativeUnimoduleProxy?: {
+        modulesConstants?: {
+          ExponentConstants?: { appOwnership?: string };
+        };
+      };
+    }).NativeUnimoduleProxy?.modulesConstants?.ExponentConstants
+  );
+  return exponentConstants?.appOwnership === 'expo';
+}
+
+type NotificationsModule = {
+  AndroidImportance: { MAX: number };
+  getPermissionsAsync: () => Promise<unknown>;
+  requestPermissionsAsync: () => Promise<unknown>;
+  setNotificationChannelAsync: (channelId: string, input: { name: string; importance: number }) => Promise<unknown>;
+  addNotificationReceivedListener: (listener: () => void) => { remove: () => void };
+  addNotificationResponseReceivedListener: (listener: (response: {
+    notification: { request: { content: { data?: Record<string, unknown> } } };
+  }) => void) => { remove: () => void };
+  scheduleNotificationAsync: (request: {
+    content: { title: string; body: string; data?: Record<string, unknown> };
+    trigger: null;
+  }) => Promise<string>;
+  setNotificationHandler?: (handler: {
+    handleNotification: () => Promise<{
+      shouldShowBanner: boolean;
+      shouldShowList: boolean;
+      shouldPlaySound: boolean;
+      shouldSetBadge: boolean;
+    }>;
+  }) => void;
+};
+
+let notificationsModuleCache: NotificationsModule | null | undefined;
+
+function getNotificationsModule(): NotificationsModule | null {
+  if (notificationsModuleCache !== undefined) return notificationsModuleCache;
+  if (Platform.OS === 'web' || isRunningInExpoGo()) {
+    notificationsModuleCache = null;
+    return null;
+  }
+  try {
+    const notifications = require('expo-notifications') as NotificationsModule;
+    notifications.setNotificationHandler?.({
+      handleNotification: async () => ({
+        shouldShowBanner: true,
+        shouldShowList: true,
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+      }),
+    });
+    notificationsModuleCache = notifications;
+    return notifications;
+  } catch {
+    notificationsModuleCache = null;
+    return null;
+  }
+}
+
+function extractApiErrorMessage(data: unknown, fallback: string): string {
+  const errorValue = (data as { error?: unknown })?.error;
+  if (typeof errorValue === 'string' && errorValue.trim()) return errorValue;
+  if (errorValue && typeof errorValue === 'object') {
+    const flattened = errorValue as {
+      fieldErrors?: Record<string, string[]>;
+      formErrors?: string[];
+    };
+    const fieldMessage = Object.values(flattened.fieldErrors ?? {}).flat().find(Boolean);
+    if (fieldMessage) return fieldMessage;
+    const formMessage = flattened.formErrors?.find(Boolean);
+    if (formMessage) return formMessage;
+  }
+  return fallback;
+}
+
 async function buyerApi<T>(path: string, options: RequestInit = {}): Promise<T> {
   const send = async (token?: string | null) => fetch(`${API_BASE}${path}`, {
     ...options,
@@ -545,7 +849,7 @@ async function buyerApi<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   const data = await res.json();
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+    throw new Error(extractApiErrorMessage(data, `HTTP ${res.status}`));
   }
   return data as T;
 }
@@ -572,6 +876,12 @@ async function unblockModerationUser(userId: string) {
 
 async function getModerationRelation(userId: string): Promise<{ blocked: boolean; blockedByMe: boolean }> {
   return buyerApi(`/moderation/relation/${userId}`);
+}
+
+async function acceptBuyerCommunityPolicy() {
+  return buyerApi<{ success: true }>('/moderation/accept-ugc-policy', {
+    method: 'POST',
+  });
 }
 
 
@@ -719,6 +1029,15 @@ const SPICE_LEVELS = [
   { id: 'extra', label: 'Extra' },
 ];
 
+// Same three underlying values (mild/medium/extra) everywhere — only the
+// display copy adapts, so downstream code reading `spice` never has to
+// change (chefs, orders, etc. still just see mild/medium/extra).
+const CATEGORY_SPICE_DISPLAY: Record<string, { sectionLabel: string; labels: Record<string, string> }> = {
+  '9': { sectionLabel: 'Texture', labels: { mild: 'Soft', medium: 'Regular', extra: 'Crispy' } }, // Roti
+  '11': { sectionLabel: 'Sweetness Level', labels: { mild: 'Less Sweet', medium: 'Medium Sweet', extra: 'Extra Sweet' } }, // Dessert
+};
+const DEFAULT_SPICE_DISPLAY = { sectionLabel: 'Spice Level', labels: { mild: 'Mild', medium: 'Medium', extra: 'Extra' } };
+
 const PREFS = [
   { id: 'bone', label: 'Bone-in' },
   { id: 'boneless', label: 'Boneless' },
@@ -734,6 +1053,120 @@ const PREFS = [
   { id: 'redchilli', label: 'Red Chilli' },
   { id: 'greenchilli', label: 'Green Chilli' },
 ];
+
+// Category-specific preference tags (keyed by FOOD_CATEGORIES id). Falls
+// back to the full generic PREFS list for Custom (12) or any unmapped id.
+const CATEGORY_PREFS: Record<string, Array<{ id: string; label: string }>> = {
+  '1': [ // Chicken
+    { id: 'bone', label: 'Bone-in' },
+    { id: 'boneless', label: 'Boneless' },
+    { id: 'noonion', label: 'No Onion' },
+    { id: 'nogarlic', label: 'No Garlic' },
+    { id: 'lessoil', label: 'Less Oil' },
+    { id: 'mustardoil', label: 'Mustard Oil' },
+    { id: 'extragravy', label: 'Extra Gravy' },
+    { id: 'dry', label: 'Dry Preparation' },
+    { id: 'greenchilli', label: 'Green Chilli' },
+    { id: 'coriander', label: 'Coriander' },
+  ],
+  '2': [ // Mutton
+    { id: 'bone', label: 'Bone-in' },
+    { id: 'boneless', label: 'Boneless' },
+    { id: 'noonion', label: 'No Onion' },
+    { id: 'nogarlic', label: 'No Garlic' },
+    { id: 'lessoil', label: 'Less Oil' },
+    { id: 'mustardoil', label: 'Mustard Oil' },
+    { id: 'extragravy', label: 'Extra Gravy' },
+    { id: 'slowcooked', label: 'Slow Cooked' },
+    { id: 'greenchilli', label: 'Green Chilli' },
+    { id: 'coriander', label: 'Coriander' },
+  ],
+  '3': [ // Biryani
+    { id: 'extraraita', label: 'Extra Raita' },
+    { id: 'noegg', label: 'No Egg' },
+    { id: 'boneless', label: 'Boneless' },
+    { id: 'lessmasala', label: 'Less Spicy Masala' },
+    { id: 'extraghee', label: 'Extra Ghee' },
+    { id: 'friedonion', label: 'Fried Onion' },
+    { id: 'boiledegg', label: 'Boiled Egg on Side' },
+  ],
+  '4': [ // Thali
+    { id: 'noonion', label: 'No Onion' },
+    { id: 'nogarlic', label: 'No Garlic' },
+    { id: 'extraroti', label: 'Extra Roti' },
+    { id: 'lessoil', label: 'Less Oil' },
+    { id: 'extradal', label: 'Extra Dal' },
+    { id: 'sweetincluded', label: 'Sweet Included' },
+    { id: 'papad', label: 'Papad' },
+    { id: 'salad', label: 'Salad' },
+  ],
+  '5': [ // Paneer
+    { id: 'noonion', label: 'No Onion' },
+    { id: 'nogarlic', label: 'No Garlic' },
+    { id: 'lessoil', label: 'Less Oil' },
+    { id: 'extragravy', label: 'Extra Gravy' },
+    { id: 'dry', label: 'Dry Preparation' },
+    { id: 'mildcream', label: 'Mild Cream' },
+    { id: 'greenchilli', label: 'Green Chilli' },
+    { id: 'coriander', label: 'Coriander' },
+  ],
+  '6': [ // Dal
+    { id: 'noonion', label: 'No Onion' },
+    { id: 'nogarlic', label: 'No Garlic' },
+    { id: 'lessoil', label: 'Less Oil' },
+    { id: 'extratadka', label: 'Extra Tadka' },
+    { id: 'thin', label: 'Thin Consistency' },
+    { id: 'thick', label: 'Thick Consistency' },
+    { id: 'gheetadka', label: 'Ghee Tadka' },
+  ],
+  '7': [ // Fish
+    { id: 'bone', label: 'Bone-in' },
+    { id: 'boneless', label: 'Boneless' },
+    { id: 'noonion', label: 'No Onion' },
+    { id: 'nogarlic', label: 'No Garlic' },
+    { id: 'mustardoil', label: 'Mustard Oil' },
+    { id: 'extragravy', label: 'Extra Gravy' },
+    { id: 'fried', label: 'Fried' },
+    { id: 'currystyle', label: 'Curry Style' },
+  ],
+  '8': [ // Snacks
+    { id: 'lessoil', label: 'Less Oil' },
+    { id: 'extracrispy', label: 'Extra Crispy' },
+    { id: 'noonion', label: 'No Onion' },
+    { id: 'nogarlic', label: 'No Garlic' },
+    { id: 'spicychutney', label: 'Spicy Chutney' },
+    { id: 'sweetchutney', label: 'Sweet Chutney' },
+    { id: 'extrasauce', label: 'Extra Sauce' },
+  ],
+  '9': [ // Roti
+    { id: 'butter', label: 'Butter' },
+    { id: 'nobutter', label: 'No Butter' },
+    { id: 'extrasoft', label: 'Extra Soft' },
+    { id: 'wholewheat', label: 'Whole Wheat' },
+    { id: 'stuffed', label: 'Stuffed' },
+    { id: 'plain', label: 'Plain' },
+  ],
+  '10': [ // Noodles
+    { id: 'extraveggies', label: 'Extra Veggies' },
+    { id: 'noegg', label: 'No Egg' },
+    { id: 'lessoil', label: 'Less Oil' },
+    { id: 'extraspicy', label: 'Extra Spicy' },
+    { id: 'extrasauce', label: 'Extra Sauce' },
+    { id: 'chicken', label: 'Boneless Chicken' },
+    { id: 'vegonly', label: 'Vegetarian Only' },
+    { id: 'schezwan', label: 'Schezwan Style' },
+  ],
+  '11': [ // Dessert
+    { id: 'lesssweet', label: 'Less Sweet' },
+    { id: 'extrasweet', label: 'Extra Sweet' },
+    { id: 'nonuts', label: 'No Nuts' },
+    { id: 'extranuts', label: 'Extra Nuts' },
+    { id: 'noghee', label: 'No Ghee' },
+    { id: 'chilled', label: 'Chilled' },
+    { id: 'warm', label: 'Warm' },
+    { id: 'sugarfree', label: 'Sugar-Free' },
+  ],
+};
 
 const DELIVERY = [
   { id: 'pickup', label: 'Self Pickup - 5% Off' },
@@ -759,6 +1192,16 @@ const holdTimeLeft = (holdUntil?: string | null) => {
   const mins = Math.floor(remaining / 60);
   const secs = remaining % 60;
   return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
+const formatDistanceLabel = (distanceKm?: number | null, fallback?: string | null) => {
+  if (distanceKm == null || !Number.isFinite(distanceKm)) return fallback ?? 'Nearby';
+  if (distanceKm < 1) {
+    const meters = Math.max(50, Math.round(distanceKm * 1000));
+    return `${meters} m`;
+  }
+  const rounded = Math.round(distanceKm * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)} km`;
 };
 
 const formatMemberSince = (iso?: string) => {
@@ -813,12 +1256,15 @@ type PublicChef = {
   initial: string;
   dish: string;
   distance: string;
+  distanceKm?: number | null;
   rating: number;
   tags: string[];
   price: number;
   eta: string;
   serves: number;
   avatar?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 };
 
 type SavedChef = {
@@ -827,6 +1273,7 @@ type SavedChef = {
   initial: string;
   dish: string;
   distance: string;
+  distanceKm?: number | null;
   rating: number;
   tags: string[];
   price: number;
@@ -834,6 +1281,8 @@ type SavedChef = {
   serves: number;
   avatar?: string | null;
   city?: string | null;
+  lat?: number | null;
+  lng?: number | null;
   savedAt: string;
 };
 
@@ -845,6 +1294,8 @@ type PublicChefProfileApi = {
   bio?: string | null;
   cookingStyle?: string | null;
   city?: string | null;
+  lat?: number | null;
+  lng?: number | null;
   rating: number;
   ratingCount: number;
   totalOrders: number;
@@ -893,7 +1344,11 @@ type CookingFeedApiItem = {
   status: 'cooking' | 'ready';
   remainingMinutes: number;
   readyAt: string;
+  createdAt: string;
+  updatedAt: string;
   distanceKm?: number | null;
+  dishRatingAverage?: number;
+  dishRatingCount?: number;
   chef?: {
     id: string;
     name: string;
@@ -901,6 +1356,8 @@ type CookingFeedApiItem = {
     city?: string | null;
     location?: string | null;
     rating: number;
+    lat?: number | null;
+    lng?: number | null;
   };
 };
 
@@ -917,11 +1374,18 @@ type CookingFeedCard = {
   status: 'cooking' | 'ready';
   etaMin: string;
   readyAt: string;
+  createdAt: string;
+  updatedAt: string;
   imageUri: string | null;
-  serves: number;
+  availablePlates: number;
+  quantityLabel: string;
   price: number;
   rating: number;
+  dishRatingAverage: number;
+  dishRatingCount: number;
   tags: string[];
+  chefLat: number | null;
+  chefLng: number | null;
 };
 
 
@@ -940,6 +1404,14 @@ const emojiBgFor = (emoji: string) => {
   return bgMap[emoji] ?? C.cream;
 };
 
+function formatCookingQuantity(item: Pick<CookingFeedApiItem, 'portionType' | 'portionValue' | 'portionUnit'>): string {
+  if (item.portionType === 'pieces') {
+    const unit = item.portionUnit.trim() || 'pieces';
+    return `${item.portionValue} ${unit}`;
+  }
+  return `${item.portionValue} ${item.portionUnit.trim()}`;
+}
+
 const mapCookingFeedItem = (item: CookingFeedApiItem): CookingFeedCard => ({
 
   id: item.id,
@@ -949,17 +1421,31 @@ const mapCookingFeedItem = (item: CookingFeedApiItem): CookingFeedCard => ({
   chefName: item.chef?.name ?? 'Chef',
   chefInitial: (item.chef?.name?.[0] ?? 'C').toUpperCase(),
   dish: item.dishName,
-  distance: item.distanceKm != null ? `${item.distanceKm} km` : item.chef?.city ?? item.chef?.location ?? 'Nearby',
+  distance: formatDistanceLabel(item.distanceKm, item.chef?.city ?? item.chef?.location ?? 'Nearby'),
   distanceKm: item.distanceKm ?? null,
   status: item.status,
   etaMin: item.readyAt,
   readyAt: item.readyAt,
+  createdAt: item.createdAt,
+  updatedAt: item.updatedAt,
   imageUri: item.imageUrl ?? null,
-  serves: item.plates,
+  availablePlates: item.plates,
+  quantityLabel: formatCookingQuantity(item),
   price: item.pricePerPlate,
   rating: item.chef?.rating ?? 0,
+  dishRatingAverage: item.dishRatingAverage ?? 0,
+  dishRatingCount: item.dishRatingCount ?? 0,
   tags: [item.cuisine, ...item.tags].filter(Boolean),
+  chefLat: item.chef?.lat ?? null,
+  chefLng: item.chef?.lng ?? null,
 });
+
+function getListingAgeLabel(liveAt: string): string {
+  const elapsedMs = Date.now() - new Date(liveAt).getTime();
+  if (elapsedMs < 60 * 60 * 1000) return '🌿 Fresh';
+  const hours = Math.max(1, Math.floor(elapsedMs / (60 * 60 * 1000)));
+  return `${hours}hr active`;
+}
 
 type FloatedDish = {
   dishName: string;
@@ -987,6 +1473,159 @@ const SIDE_OPTIONS = [
   { id: 'chutney', label: 'Chutney', unit: 'portion' },
   { id: 'papad', label: 'Papad', unit: 'pieces' },
 ];
+
+const BOOT_STATUS_PHRASES = [
+  'warming up the kitchen',
+  'finding chefs near you',
+  'plating your feed',
+  'almost ready',
+];
+const BRAND_LETTERS = 'foodsood'.split('');
+
+function BootSteamWisp({ delay, offsetX }: { delay: number; offsetX: number }) {
+  const rise = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.delay(delay),
+        Animated.timing(rise, { toValue: 1, duration: 2200, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        Animated.timing(rise, { toValue: 0, duration: 0, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [delay, rise]);
+
+  const translateY = rise.interpolate({ inputRange: [0, 1], outputRange: [0, -34] });
+  const opacity = rise.interpolate({ inputRange: [0, 0.15, 0.7, 1], outputRange: [0, 0.55, 0.3, 0] });
+  const scaleX = rise.interpolate({ inputRange: [0, 1], outputRange: [1, 1.6] });
+
+  return (
+    <Animated.View
+      style={[
+        bootSt.steamWisp,
+        { left: 38 + offsetX, opacity, transform: [{ translateY }, { scaleX }] },
+      ]}
+    />
+  );
+}
+
+function BootSplashScreen() {
+  const pulse = useRef(new Animated.Value(0)).current;
+  const orbit = useRef(new Animated.Value(0)).current;
+  const letterAnims = useRef(BRAND_LETTERS.map(() => new Animated.Value(0))).current;
+  const taglineOp = useRef(new Animated.Value(0)).current;
+  const statusOp = useRef(new Animated.Value(0)).current;
+  const pinOp = useRef(new Animated.Value(0)).current;
+  const [statusIndex, setStatusIndex] = useState(0);
+
+  useEffect(() => {
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    const orbitLoop = Animated.loop(
+      Animated.timing(orbit, { toValue: 1, duration: 3200, easing: Easing.linear, useNativeDriver: true })
+    );
+    pulseLoop.start();
+    orbitLoop.start();
+
+    Animated.stagger(
+      55,
+      letterAnims.map((anim) =>
+        Animated.timing(anim, { toValue: 1, duration: 420, easing: Easing.out(Easing.back(1.4)), useNativeDriver: true })
+      )
+    ).start();
+
+    Animated.timing(taglineOp, { toValue: 1, duration: 500, delay: 480, useNativeDriver: true }).start();
+    Animated.timing(pinOp, { toValue: 1, duration: 500, delay: 700, useNativeDriver: true }).start();
+
+    let cancelled = false;
+    const cycleStatus = () => {
+      Animated.timing(statusOp, { toValue: 1, duration: 260, delay: 620, useNativeDriver: true }).start();
+    };
+    cycleStatus();
+    const interval = setInterval(() => {
+      if (cancelled) return;
+      Animated.timing(statusOp, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => {
+        if (cancelled) return;
+        setStatusIndex((i) => (i + 1) % BOOT_STATUS_PHRASES.length);
+        Animated.timing(statusOp, { toValue: 1, duration: 260, useNativeDriver: true }).start();
+      });
+    }, 1900);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      pulseLoop.stop();
+      orbitLoop.stop();
+    };
+  }, [letterAnims, orbit, pinOp, pulse, statusOp, taglineOp]);
+
+  const plateScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.035] });
+  const glowOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.5] });
+  const orbitAngle = orbit.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+
+  return (
+    <View style={bootSt.wrap}>
+      <View style={bootSt.stage}>
+        <View style={bootSt.plateArea}>
+          <BootSteamWisp delay={0} offsetX={-14} />
+          <BootSteamWisp delay={750} offsetX={10} />
+          <BootSteamWisp delay={1500} offsetX={30} />
+
+          <Animated.View style={[bootSt.plateGlow, { opacity: glowOpacity, transform: [{ scale: plateScale }] }]} />
+          <Animated.View style={[bootSt.plate, { transform: [{ scale: plateScale }] }]}>
+            <View style={bootSt.plateInner}>
+              <Text style={bootSt.plateEmoji}>{'🍛'}</Text>
+            </View>
+            <Animated.View
+              style={[
+                bootSt.orbitDot,
+                { transform: [{ rotate: orbitAngle }, { translateX: 46 }] },
+              ]}
+            />
+          </Animated.View>
+        </View>
+
+        <View style={bootSt.wordmarkRow}>
+          {BRAND_LETTERS.map((letter, i) => {
+            const anim = letterAnims[i];
+            return (
+              <Animated.Text
+                key={`${letter}-${i}`}
+                style={[
+                  bootSt.wordmarkLetter,
+                  i < 4 ? bootSt.wordmarkLetterFood : bootSt.wordmarkLetterSood,
+                  {
+                    opacity: anim,
+                    transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+                  },
+                ]}
+              >
+                {letter}
+              </Animated.Text>
+            );
+          })}
+        </View>
+
+        <Animated.Text style={[bootSt.tagline, { opacity: taglineOp }]}>homemade food, minutes away</Animated.Text>
+
+        <View style={bootSt.statusRow}>
+          <View style={bootSt.statusDot} />
+          <Animated.Text style={[bootSt.statusText, { opacity: statusOp }]}>{BOOT_STATUS_PHRASES[statusIndex]}</Animated.Text>
+        </View>
+      </View>
+
+      <Animated.View style={[bootSt.pinRow, { opacity: pinOp }]}>
+        <Text style={bootSt.pinIcon}>{'📍'}</Text>
+        <Text style={bootSt.pinText}>Home chefs are cooking nearby</Text>
+      </Animated.View>
+    </View>
+  );
+}
 
 const THALI_INCLUDES = '1 bhaja, 2 sabji, daal, chicken/fish/mutton/paneer, chutney, papad';
 
@@ -1032,8 +1671,18 @@ export default function App() {
   const [otpBusy, setOtpBusy] = useState(false);
   const [selectedCat, setSelectedCat] = useState('1');
   const [feedTab, setFeedTab] = useState<'requests' | 'cooking'>('requests');
+  const [ordersTab, setOrdersTab] = useState<'payment' | 'approval' | 'confirmed'>('payment');
+  const [announcedNotificationKeys, setAnnouncedNotificationKeys] = useState<string[]>([]);
+  const [announcedNotificationsReady, setAnnouncedNotificationsReady] = useState(false);
+  const [announceNotificationBaselinePending, setAnnounceNotificationBaselinePending] = useState(false);
+  const notificationCardsRef = useRef<BuyerNotificationCard[]>([]);
+  const notificationReceivedSubRef = useRef<{ remove: () => void } | null>(null);
+  const notificationResponseSubRef = useRef<{ remove: () => void } | null>(null);
+  const buyerNotificationsReadyRef = useRef(false);
   const [cookingFeed, setCookingFeed] = useState<CookingFeedCard[]>([]);
   const [cookingLoading, setCookingLoading] = useState(false);
+  const [exploreSearch, setExploreSearch] = useState('');
+  const [exploreCuisine, setExploreCuisine] = useState<string | null>(null);
   const [cookingTick, setCookingTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setCookingTick((t) => t + 1), 1000);
@@ -1100,6 +1749,7 @@ export default function App() {
   const [customAddressLabel, setCustomAddressLabel] = useState('');
   const [savedAddresses, setSavedAddresses] = useState<BuyerAddress[]>([]);
   const [savedAddressesReady, setSavedAddressesReady] = useState(false);
+  const [locationMode, setLocationMode] = useState<'device' | 'manual' | null>(null);
   const [locationAddress, setLocationAddress] = useState('');
   const [locationLandmark, setLocationLandmark] = useState('');
   const [buildingImageUri, setBuildingImageUri] = useState<string | null>(null);
@@ -1112,7 +1762,9 @@ export default function App() {
   const mapLookupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mapLookupSeqRef = useRef(0);
   const buyerProfileRef = useRef<BuyerProfile | null>(null);
+  const savedAddressesRef = useRef<BuyerAddress[]>([]);
   const locationRefreshInFlightRef = useRef(false);
+  const locationModeRef = useRef<'device' | 'manual' | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const buyerDisplayName = buyerProfile?.name ?? 'Buyer';
   const buyerInitial = buyerDisplayName.trim().charAt(0).toUpperCase() || 'B';
@@ -1121,6 +1773,31 @@ export default function App() {
   useEffect(() => {
     buyerProfileRef.current = buyerProfile;
   }, [buyerProfile]);
+
+  useEffect(() => {
+    savedAddressesRef.current = savedAddresses;
+  }, [savedAddresses]);
+
+  useEffect(() => {
+    locationModeRef.current = locationMode;
+  }, [locationMode]);
+
+  useEffect(() => {
+    setLocationMode(null);
+  }, [buyerProfile?.id]);
+
+  const selectionMatchesSavedAddress = (
+    addressText?: string | null,
+    coords?: { lat: number; lng: number } | null,
+  ) => savedAddressesRef.current.some((address) => {
+    if (addressText?.trim() && address.address.trim().toLowerCase() === addressText.trim().toLowerCase()) {
+      return true;
+    }
+    if (coords && address.lat != null && address.lng != null) {
+      return distanceKmBetween(coords.lat, coords.lng, address.lat, address.lng) < 0.05;
+    }
+    return false;
+  });
 
   const loadCookingFeed = async (coordsOverride?: { lat: number; lng: number } | null) => {
     setCookingLoading(true);
@@ -1147,7 +1824,7 @@ export default function App() {
     loadCookingFeed();
     const id = setInterval(() => {
       loadCookingFeed();
-    }, 10000);
+    }, 60000);
     return () => clearInterval(id);
   }, [screen, geoRadius, userCoords]);
 
@@ -1201,20 +1878,28 @@ export default function App() {
   }, [buyerProfile?.id, buyerProfile?.city, buyerProfile?.location, buyerProfile?.lat, buyerProfile?.lng]);
 
   useEffect(() => {
-    if (!buyerProfile?.id) return;
+    if (!buyerProfile?.id || !savedAddressesReady || locationMode !== 'device') return;
     void refreshBuyerLocationFromDevice();
-  }, [buyerProfile?.id]);
+  }, [buyerProfile?.id, locationMode, savedAddressesReady]);
+
+  useEffect(() => {
+    if (locationMode !== null || !buyerProfile?.id || !savedAddressesReady) return;
+    const profileCoords = buyerProfile.lat != null && buyerProfile.lng != null
+      ? { lat: buyerProfile.lat, lng: buyerProfile.lng }
+      : null;
+    setLocationMode(selectionMatchesSavedAddress(buyerProfile.location, profileCoords) ? 'manual' : 'device');
+  }, [buyerProfile?.id, buyerProfile?.location, buyerProfile?.lat, buyerProfile?.lng, locationMode, savedAddressesReady, savedAddresses]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       const wasBackgrounded = appStateRef.current === 'background' || appStateRef.current === 'inactive';
       appStateRef.current = nextState;
-      if (wasBackgrounded && nextState === 'active') {
+      if (wasBackgrounded && nextState === 'active' && locationModeRef.current === 'device' && savedAddressesReady) {
         void refreshBuyerLocationFromDevice();
       }
     });
     return () => subscription.remove();
-  }, [buyerProfile?.id]);
+  }, [buyerProfile?.id, savedAddressesReady]);
 
   useEffect(() => {
     if (!showLocationMapModal || !draftMapCoords) return;
@@ -1319,7 +2004,7 @@ export default function App() {
 
   const refreshBuyerLocationFromDevice = async () => {
     const profile = buyerProfileRef.current;
-    if (!profile || locationRefreshInFlightRef.current) return;
+    if (!profile || locationRefreshInFlightRef.current || locationModeRef.current !== 'device') return;
 
     try {
       const permission = await Location.getForegroundPermissionsAsync();
@@ -1406,6 +2091,7 @@ export default function App() {
       const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const { latitude, longitude } = pos.coords;
       const details = await resolveLocationDetails(latitude, longitude);
+      setLocationMode('device');
       applyResolvedLocationDetails(latitude, longitude, details);
 
       if (buyerProfile) {
@@ -1438,6 +2124,7 @@ export default function App() {
 
   const selectSavedAddress = async (address: BuyerAddress) => {
     const applyAddress = () => {
+      setLocationMode('manual');
       setLocationAddress(address.address);
       if (address.lat != null && address.lng != null) {
         setUserCoords({ lat: address.lat, lng: address.lng });
@@ -1548,6 +2235,7 @@ export default function App() {
 
     setLocation(nextLocation);
     setLocationSearch(nextLocation);
+    setLocationMode('manual');
 
     if (buyerProfile) {
       try {
@@ -1590,6 +2278,12 @@ export default function App() {
 
   const handleSelectFood = (id: string) => {
     setSelectedFood(id);
+    // Preference tags (and what the spice/sweetness scale means) are
+    // category-specific — reset both so a stale selection from the
+    // previous category can't linger invisibly in the request payload.
+    setPrefs([]);
+    setShowAllPrefs(false);
+    setSpice('extra');
     const names: Record<string, string> = {
       '1': 'Chicken Curry',
       '2': 'Mutton Curry',
@@ -1629,8 +2323,10 @@ export default function App() {
     : estimatedServings === 0
       ? 'Add quantity to see servings'
       : `Serves approx ${estimatedServings} ${estimatedServings === 1 ? 'person' : 'people'}`;
-  const collapsedPrefs = PREFS.slice(0, 5);
-  const visiblePrefs = showAllPrefs ? PREFS : collapsedPrefs;
+  const categoryPrefs = CATEGORY_PREFS[selectedFood] ?? PREFS;
+  const collapsedPrefs = categoryPrefs.slice(0, 5);
+  const visiblePrefs = showAllPrefs ? categoryPrefs : collapsedPrefs;
+  const spiceDisplay = CATEGORY_SPICE_DISPLAY[selectedFood] ?? DEFAULT_SPICE_DISPLAY;
   const selectedSides = SIDE_OPTIONS
     .map((item) => ({ ...item, qty: sideQty[item.id] ?? 0 }))
     .filter((item) => item.qty > 0)
@@ -1839,6 +2535,7 @@ export default function App() {
 
   const notificationCards: BuyerNotificationCard[] = [...requestNotificationCards, ...offerNotificationCards]
     .sort((a, b) => new Date(b.activityAt).getTime() - new Date(a.activityAt).getTime());
+  notificationCardsRef.current = notificationCards;
   const currentNotificationKeys = notificationCards.map(getNotificationVersionKey);
   const unseenNotificationCount = seenNotificationsReady
     ? notificationCards.filter((item) => !seenNotificationKeys.includes(getNotificationVersionKey(item))).length
@@ -1852,10 +2549,117 @@ export default function App() {
     });
   }, [currentNotificationKeys, seenNotificationsReady]);
 
-  const markNotificationSeen = (item: BuyerNotificationCard) => {
+  useEffect(() => {
+    if (!announcedNotificationsReady) return;
+    if (announceNotificationBaselinePending) {
+      setAnnouncedNotificationKeys(notificationCards.filter(shouldAnnounceBuyerNotification).map(getNotificationVersionKey));
+      setAnnounceNotificationBaselinePending(false);
+      return;
+    }
+    setAnnouncedNotificationKeys((current) => {
+      const next = current.filter((key) => currentNotificationKeys.includes(key));
+      return next.length === current.length && next.every((key, index) => key === current[index]) ? current : next;
+    });
+  }, [announceNotificationBaselinePending, announcedNotificationsReady, currentNotificationKeys, notificationCards]);
+
+  const ensureBuyerNotificationsReady = async () => {
+    const notifications = getNotificationsModule();
+    if (!notifications) return false;
+    if (buyerNotificationsReadyRef.current) return true;
+    try {
+      const existing = await notifications.getPermissionsAsync() as { granted?: boolean; status?: string };
+      let granted = existing.granted ?? existing.status === 'granted';
+      if (!granted) {
+        const requested = await notifications.requestPermissionsAsync() as { granted?: boolean; status?: string };
+        granted = requested.granted ?? requested.status === 'granted';
+      }
+      if (!granted) return false;
+      if (Platform.OS === 'android') {
+        await notifications.setNotificationChannelAsync('default', {
+          name: 'default',
+          importance: notifications.AndroidImportance.MAX,
+        });
+      }
+      buyerNotificationsReadyRef.current = true;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (!buyerProfile) return;
+    void ensureBuyerNotificationsReady();
+  }, [buyerProfile]);
+
+  useEffect(() => {
+    notificationReceivedSubRef.current?.remove();
+    notificationResponseSubRef.current?.remove();
+    const notifications = getNotificationsModule();
+    if (!buyerProfile || !notifications) return;
+
+    notificationReceivedSubRef.current = notifications.addNotificationReceivedListener(() => {
+      void refreshBuyerData();
+    });
+    notificationResponseSubRef.current = notifications.addNotificationResponseReceivedListener((response) => {
+      void refreshBuyerData();
+      setFeedTab('requests');
+      setScreen('home');
+      const notificationKey = response.notification.request.content.data?.notificationKey;
+      if (typeof notificationKey !== 'string') return;
+      const matched = notificationCardsRef.current.find((item) => getNotificationVersionKey(item) === notificationKey);
+      if (matched) {
+        void openNotificationCard(matched);
+      }
+    });
+
+    return () => {
+      notificationReceivedSubRef.current?.remove();
+      notificationResponseSubRef.current?.remove();
+      notificationReceivedSubRef.current = null;
+      notificationResponseSubRef.current = null;
+    };
+  }, [buyerProfile, refreshBuyerData]);
+
+  useEffect(() => {
+    const notifications = getNotificationsModule();
+    if (!buyerProfile?.id || !announcedNotificationsReady || announceNotificationBaselinePending || !notifications) return;
+    const nextAnnouncements = notificationCards.filter((item) => (
+      shouldAnnounceBuyerNotification(item) && !announcedNotificationKeys.includes(getNotificationVersionKey(item))
+    ));
+    if (nextAnnouncements.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      const ready = await ensureBuyerNotificationsReady();
+      if (!ready || cancelled) return;
+      for (const item of nextAnnouncements) {
+        const { title, body } = getBuyerNotificationContent(item);
+        await notifications.scheduleNotificationAsync({
+          content: {
+            title,
+            body,
+            data: { type: 'BUYER_ACTIVITY', notificationKey: getNotificationVersionKey(item) },
+          },
+          trigger: null,
+        });
+      }
+      if (cancelled) return;
+      setAnnouncedNotificationKeys((current) => {
+        const additions = nextAnnouncements.map(getNotificationVersionKey).filter((key) => !current.includes(key));
+        return additions.length === 0 ? current : [...current, ...additions];
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [announceNotificationBaselinePending, announcedNotificationKeys, announcedNotificationsReady, buyerProfile?.id, notificationCards]);
+
+  function markNotificationSeen(item: BuyerNotificationCard) {
     const key = getNotificationVersionKey(item);
     setSeenNotificationKeys((current) => (current.includes(key) ? current : [...current, key]));
-  };
+  }
 
   const goHome = () => setScreen('home');
   const goExplore = () => setScreen('explore');
@@ -1868,7 +2672,7 @@ export default function App() {
   };
   const goOrders = () => setScreen('orders');
   const goProfile = () => setScreen('profile');
-  const openNotificationCard = async (item: BuyerNotificationCard) => {
+  async function openNotificationCard(item: BuyerNotificationCard) {
     markNotificationSeen(item);
     if (item.rawRequest) {
       try {
@@ -1887,7 +2691,7 @@ export default function App() {
       }
     }
     setSelectedNotification(item);
-  };
+  }
   const openLiveRequest = async (request: BuyerRequestApi) => {
     setCurrentRequestId(request.id);
     setCurrentRequest(request);
@@ -2366,9 +3170,12 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [reviewState, setReviewState] = useState<ReviewPromptState>({});
   const [reviewStateReady, setReviewStateReady] = useState(false);
-  const [reviewPromptOffer, setReviewPromptOffer] = useState<DishOfferItem | null>(null);
-  const [reviewRating, setReviewRating] = useState(0);
-  const [reviewComment, setReviewComment] = useState('');
+  const [reviewPromptTarget, setReviewPromptTarget] = useState<ReviewPromptTarget | null>(null);
+  const reviewPromptInitKeyRef = useRef<string | null>(null);
+  const [reviewFoodRating, setReviewFoodRating] = useState(0);
+  const [reviewFoodComment, setReviewFoodComment] = useState('');
+  const [reviewChefRating, setReviewChefRating] = useState(0);
+  const [reviewChefComment, setReviewChefComment] = useState('');
   const [selectedNotification, setSelectedNotification] = useState<BuyerNotificationCard | null>(null);
   const [savedChefs, setSavedChefs] = useState<SavedChef[]>([]);
   const [savedChefsReady, setSavedChefsReady] = useState(false);
@@ -2396,6 +3203,32 @@ export default function App() {
 
   useEffect(() => {
     if (!buyerProfile?.id) {
+      setAnnouncedNotificationKeys([]);
+      setAnnouncedNotificationsReady(true);
+      setAnnounceNotificationBaselinePending(false);
+      return;
+    }
+    const storageKey = `${ANNOUNCED_NOTIFICATIONS_STORE_KEY}_${buyerProfile.id}`;
+    setAnnouncedNotificationsReady(false);
+    SecureStore.getItemAsync(storageKey)
+      .then((raw) => {
+        if (raw) {
+          setAnnouncedNotificationKeys(JSON.parse(raw) as string[]);
+          setAnnounceNotificationBaselinePending(false);
+          return;
+        }
+        setAnnouncedNotificationKeys([]);
+        setAnnounceNotificationBaselinePending(true);
+      })
+      .catch(() => {
+        setAnnouncedNotificationKeys([]);
+        setAnnounceNotificationBaselinePending(true);
+      })
+      .finally(() => setAnnouncedNotificationsReady(true));
+  }, [buyerProfile?.id]);
+
+  useEffect(() => {
+    if (!buyerProfile?.id) {
       setSavedChefs([]);
       setSavedChefsReady(true);
       return;
@@ -2412,6 +3245,11 @@ export default function App() {
     if (!buyerProfile?.id || !seenNotificationsReady) return;
     SecureStore.setItemAsync(`${SEEN_NOTIFICATIONS_STORE_KEY}_${buyerProfile.id}`, JSON.stringify(seenNotificationKeys)).catch(() => undefined);
   }, [buyerProfile?.id, seenNotificationKeys, seenNotificationsReady]);
+
+  useEffect(() => {
+    if (!buyerProfile?.id || !announcedNotificationsReady) return;
+    SecureStore.setItemAsync(`${ANNOUNCED_NOTIFICATIONS_STORE_KEY}_${buyerProfile.id}`, JSON.stringify(announcedNotificationKeys)).catch(() => undefined);
+  }, [announcedNotificationKeys, announcedNotificationsReady, buyerProfile?.id]);
 
   useEffect(() => {
     if (!buyerProfile?.id || !savedChefsReady) return;
@@ -2507,6 +3345,38 @@ export default function App() {
   const requestHoldOrders = myRequestOrders.filter((order) => order.paymentStatus === 'HOLD');
   const requestPlacedOrders = myRequestOrders.filter((order) => (order.paymentStatus === 'PAID' || order.paymentStatus === 'ADVANCE_PAID') && order.status !== 'DELIVERED' && order.status !== 'CANCELLED');
   const requestDeliveredOrders = myRequestOrders.filter((order) => order.paymentStatus === 'PAID' && order.status === 'DELIVERED');
+  const normalisedLocationAddress = locationAddress.trim().toLowerCase();
+  const activeSavedAddress = savedAddresses.find((address) => {
+    if (normalisedLocationAddress.length > 0 && address.address.trim().toLowerCase() === normalisedLocationAddress) {
+      return true;
+    }
+    if (userCoords && address.lat != null && address.lng != null) {
+      return distanceKmBetween(userCoords.lat, userCoords.lng, address.lat, address.lng) < 0.05;
+    }
+    return false;
+  }) ?? null;
+  const otherSavedAddresses = savedAddresses.filter((address) => address.id !== activeSavedAddress?.id);
+  const getReviewStateKey = (kind: 'offer' | 'request', id: string) => `${kind}:${id}`;
+  const deliveredReviewTargets: ReviewPromptTarget[] = [
+    ...deliveredOrders.map((offer) => ({
+      kind: 'offer' as const,
+      key: getReviewStateKey('offer', offer.id),
+      id: offer.id,
+      dishName: offer.dishName,
+      dishEmoji: offer.dishEmoji,
+      chefName: 'Chef',
+      deliveredAt: offer.updatedAt,
+    })),
+    ...requestDeliveredOrders.map((order) => ({
+      kind: 'request' as const,
+      key: getReviewStateKey('request', order.id),
+      id: order.id,
+      dishName: order.request.dishName,
+      dishEmoji: FOOD_CATEGORIES.find((item) => item.label.toLowerCase() === order.request.category.toLowerCase())?.emoji ?? '🍲',
+      chefName: order.chef?.name ?? 'Chef',
+      deliveredAt: order.updatedAt,
+    })),
+  ];
   const recentOrders = [
     ...deliveredOrders.map((offer) => ({
       id: `offer-${offer.id}`,
@@ -2518,8 +3388,8 @@ export default function App() {
       price: `Rs ${(offer.agreedPrice ?? offer.offerPrice) * offer.plates}`,
       status: 'Delivered',
       statusColor: C.mint,
-      rated: !!reviewState[offer.id]?.submittedAt,
-      rating: reviewState[offer.id]?.rating ?? 0,
+      rated: !!reviewState[getReviewStateKey('offer', offer.id)]?.submittedAt,
+      rating: reviewState[getReviewStateKey('offer', offer.id)]?.foodRating ?? 0,
     })),
     ...requestDeliveredOrders.map((order) => ({
       id: `request-${order.id}`,
@@ -2531,8 +3401,8 @@ export default function App() {
       price: `Rs ${order.finalPrice}`,
       status: 'Delivered',
       statusColor: C.mint,
-      rated: false,
-      rating: 0,
+      rated: !!reviewState[getReviewStateKey('request', order.id)]?.submittedAt,
+      rating: reviewState[getReviewStateKey('request', order.id)]?.foodRating ?? 0,
     })),
   ]
     .sort((a, b) => {
@@ -2561,35 +3431,24 @@ export default function App() {
   ];
   const buyerOrderSections = [
     {
-      key: 'payment',
-      title: 'Awaiting Payment',
-      emoji: '💳',
+      key: 'payment' as const,
+      label: 'Payment',
       count: holdOrders.length + requestHoldOrders.length,
       badgeBg: C.spice,
-      sortPriority: 0,
     },
     {
-      key: 'approval',
-      title: 'Awaiting Chef Approval',
-      emoji: '⏳',
+      key: 'approval' as const,
+      label: 'Approval',
       count: pendingApprovalOrders.length,
       badgeBg: C.turmeric,
-      sortPriority: 1,
     },
     {
-      key: 'confirmed',
-      title: 'Confirmed Orders',
-      emoji: '📦',
+      key: 'confirmed' as const,
+      label: 'Confirmed',
       count: placedOrders.length + requestPlacedOrders.length,
       badgeBg: C.mint,
-      sortPriority: 2,
     },
-  ].sort((a, b) => {
-    const aActive = a.count > 0 ? 0 : 1;
-    const bActive = b.count > 0 ? 0 : 1;
-    if (aActive !== bActive) return aActive - bActive;
-    return a.sortPriority - b.sortPriority;
-  });
+  ];
 
   const persistReviewState = async (next: ReviewPromptState) => {
     setReviewState(next);
@@ -2601,25 +3460,31 @@ export default function App() {
   useEffect(() => {
     if (!reviewStateReady) return;
     const now = Date.now();
-    const nextOffer = deliveredOrders.find((offer) => {
-      const deliveredAt = new Date(offer.updatedAt).getTime();
+    const nextTarget = deliveredReviewTargets.find((target) => {
+      const deliveredAt = new Date(target.deliveredAt).getTime();
       if (!Number.isFinite(deliveredAt) || now - deliveredAt < REVIEW_PROMPT_DELAY_MS) return false;
-      const state = reviewState[offer.id];
+      const state = reviewState[target.key];
       if (state?.submittedAt) return false;
       if (state?.snoozeUntil && new Date(state.snoozeUntil).getTime() > now) return false;
       return true;
     }) ?? null;
 
-    if (!nextOffer) {
-      setReviewPromptOffer(null);
+    if (!nextTarget) {
+      setReviewPromptTarget(null);
+      reviewPromptInitKeyRef.current = null;
       return;
     }
 
-    setReviewPromptOffer((current) => current?.id === nextOffer.id ? current : nextOffer);
-    const saved = reviewState[nextOffer.id];
-    setReviewRating(saved?.rating ?? 0);
-    setReviewComment(saved?.comment ?? '');
-  }, [deliveredOrders, reviewState, reviewStateReady]);
+    setReviewPromptTarget((current) => current?.key === nextTarget.key ? current : nextTarget);
+    if (reviewPromptInitKeyRef.current !== nextTarget.key) {
+      const saved = reviewState[nextTarget.key];
+      setReviewFoodRating(saved?.foodRating ?? 0);
+      setReviewFoodComment(saved?.foodComment ?? '');
+      setReviewChefRating(saved?.chefRating ?? 0);
+      setReviewChefComment(saved?.chefComment ?? '');
+      reviewPromptInitKeyRef.current = nextTarget.key;
+    }
+  }, [deliveredReviewTargets, reviewState, reviewStateReady]);
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Home bargain modal ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   type HomeBargainItem = { dishId: string; chefId: string; name: string; emoji: string; chefPrice: number; maxPlates: number };
@@ -2669,6 +3534,10 @@ export default function App() {
       Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
       return;
     }
+    if (!isCashfreeUsable()) {
+      showCashfreeUnavailable();
+      return;
+    }
     setCheckoutBusy(true);
     try {
       const res = await fetch(`${API_BASE}/offers/${checkoutOffer.id}/cashfree/session`, {
@@ -2682,12 +3551,12 @@ export default function App() {
       });
       const data = await res.json() as CashfreeSessionResponse & { error?: string };
       if (!res.ok) throw new Error(data.error ?? 'Could not start Cashfree payment');
-      const session = new CFSession(
+      const session = cashfreeSdk.createSession!(
         data.paymentSessionId,
         data.cashfreeOrderId,
-        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+        data.environment,
       );
-      CFPaymentGatewayService.doWebPayment(session);
+      cashfreeSdk.doWebPayment!(session);
       setCheckoutOffer(null);
       setCheckoutPaymentType('full');
     } catch (error) {
@@ -2703,18 +3572,22 @@ export default function App() {
       Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
       return;
     }
+    if (!isCashfreeUsable()) {
+      showCashfreeUnavailable();
+      return;
+    }
     setCheckoutBusy(true);
     try {
       const data = await buyerApi<CashfreeSessionResponse>(`/orders/${checkoutRequestOrder.id}/cashfree/session`, {
         method: 'POST',
         body: JSON.stringify({ paymentType: checkoutPaymentType }),
       });
-      const session = new CFSession(
+      const session = cashfreeSdk.createSession!(
         data.paymentSessionId,
         data.cashfreeOrderId,
-        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+        data.environment,
       );
-      CFPaymentGatewayService.doWebPayment(session);
+      cashfreeSdk.doWebPayment!(session);
       setCheckoutRequestOrder(null);
       setCheckoutPaymentType('full');
     } catch (error) {
@@ -2730,6 +3603,10 @@ export default function App() {
       Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
       return;
     }
+    if (!isCashfreeUsable()) {
+      showCashfreeUnavailable();
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/offers/${offer.id}/cashfree/balance-session`, {
         method: 'POST',
@@ -2738,12 +3615,12 @@ export default function App() {
       });
       const data = await res.json() as CashfreeSessionResponse & { error?: string };
       if (!res.ok) throw new Error(data.error ?? 'Could not start Cashfree payment');
-      const session = new CFSession(
+      const session = cashfreeSdk.createSession!(
         data.paymentSessionId,
         data.cashfreeOrderId,
-        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+        data.environment,
       );
-      CFPaymentGatewayService.doWebPayment(session);
+      cashfreeSdk.doWebPayment!(session);
     } catch (error) {
       Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not start Cashfree balance payment.');
     }
@@ -2755,22 +3632,26 @@ export default function App() {
         Alert.alert('Unavailable on web', 'Cashfree checkout is configured for native app builds. Use an Android or iOS build to test payments.');
         return;
       }
+      if (!isCashfreeUsable()) {
+        showCashfreeUnavailable();
+        return;
+      }
       const data = await buyerApi<CashfreeSessionResponse>(`/orders/${order.id}/cashfree/balance-session`, {
         method: 'POST',
         body: JSON.stringify({}),
       });
-      const session = new CFSession(
+      const session = cashfreeSdk.createSession!(
         data.paymentSessionId,
         data.cashfreeOrderId,
-        data.environment === 'PRODUCTION' ? CFEnvironment.PRODUCTION : CFEnvironment.SANDBOX,
+        data.environment,
       );
-      CFPaymentGatewayService.doWebPayment(session);
+      cashfreeSdk.doWebPayment!(session);
     } catch (error) {
       Alert.alert('Payment failed', error instanceof Error ? error.message : 'Could not start Cashfree balance payment.');
     }
   };
 
-  const refreshBuyerData = async () => {
+  async function refreshBuyerData() {
     setRefreshing(true);
     try {
       await loadCookingFeed();
@@ -2787,7 +3668,7 @@ export default function App() {
     } finally {
       setRefreshing(false);
     }
-  };
+  }
 
   const verifyCashfreePayment = async (cashfreeOrderId: string) => {
     setCashfreeVerifying(true);
@@ -2828,13 +3709,13 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (Platform.OS === 'web') return;
-    const callback: CFCallback = {
+    if (!isCashfreeUsable()) return;
+    const callback: CashfreeCallback = {
       onVerify: (orderID) => {
         void verifyCashfreePayment(orderID);
       },
       onError: (error, orderID) => {
-        const message = error instanceof CFErrorResponse ? error.getMessage() : 'Could not complete Cashfree payment.';
+        const message = cashfreeSdk.getErrorMessage?.(error) ?? 'Could not complete Cashfree payment.';
         Alert.alert('Payment failed', message || 'Could not complete Cashfree payment.');
         if (orderID) {
           void verifyCashfreePayment(orderID);
@@ -2842,64 +3723,94 @@ export default function App() {
       },
     };
 
-    CFPaymentGatewayService.setCallback(callback);
+    cashfreeSdk.setCallback!(callback);
     return () => {
-      CFPaymentGatewayService.removeCallback();
+      cashfreeSdk.removeCallback!();
     };
   }, [buyerProfile, buyerToken, currentRequestId]);
 
   const snoozeReviewPrompt = async () => {
-    if (!reviewPromptOffer) return;
+    if (!reviewPromptTarget) return;
     const snoozeUntil = new Date(Date.now() + REVIEW_SNOOZE_MS).toISOString();
-    const next = { ...reviewState };
-    deliveredOrders.forEach((offer) => {
-      if (reviewState[offer.id]?.submittedAt) return;
-      next[offer.id] = {
-        ...reviewState[offer.id],
-        rating: offer.id === reviewPromptOffer.id ? (reviewRating || undefined) : reviewState[offer.id]?.rating,
-        comment: offer.id === reviewPromptOffer.id ? (reviewComment.trim() || undefined) : reviewState[offer.id]?.comment,
+    const next = {
+      ...reviewState,
+      [reviewPromptTarget.key]: {
+        ...reviewState[reviewPromptTarget.key],
+        foodRating: reviewFoodRating || undefined,
+        foodComment: reviewFoodComment.trim() || undefined,
+        chefRating: reviewChefRating || undefined,
+        chefComment: reviewChefComment.trim() || undefined,
         snoozeUntil,
-      };
-    });
+      },
+    };
     await persistReviewState(next);
-    setReviewPromptOffer(null);
+    setReviewPromptTarget(null);
   };
 
   const submitReviewPrompt = async () => {
-    if (!reviewPromptOffer || !buyerToken) return;
-    const comment = reviewComment.trim();
-    if (reviewRating === 0 && !comment) {
-      Alert.alert('Add feedback', 'You can submit a rating, a short review, or both.');
+    if (!reviewPromptTarget) return;
+    const foodComment = reviewFoodComment.trim();
+    const chefComment = reviewChefComment.trim();
+    if (reviewFoodRating === 0 || reviewChefRating === 0) {
+      Alert.alert('Add ratings', 'Please rate both the food and the chef before submitting.');
       return;
     }
+    if (!buyerProfile?.ugcPolicyAcceptedAt) {
+      try {
+        await acceptBuyerCommunityPolicy();
+        setBuyerProfile((current) => current ? { ...current, ugcPolicyAcceptedAt: new Date().toISOString() } : current);
+      } catch (error) {
+        Alert.alert('Policy required', error instanceof Error ? error.message : 'Could not accept the community policy.');
+        return;
+      }
+    }
     try {
-      const res = await fetch(`${API_BASE}/offers/${reviewPromptOffer.id}/review`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          buyerToken,
-          rating: reviewRating || undefined,
-          comment: comment || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error((data as { error?: string }).error ?? 'Could not submit review');
+      if (reviewPromptTarget.kind === 'offer') {
+        if (!buyerToken) return;
+        const res = await fetch(`${API_BASE}/offers/${reviewPromptTarget.id}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            buyerToken,
+            foodRating: reviewFoodRating,
+            foodComment: foodComment || undefined,
+            chefRating: reviewChefRating,
+            chefComment: chefComment || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(extractApiErrorMessage(data, 'Could not submit review'));
+      } else {
+        await buyerApi(`/orders/${reviewPromptTarget.id}/review`, {
+          method: 'POST',
+          body: JSON.stringify({
+            foodRating: reviewFoodRating,
+            foodComment: foodComment || undefined,
+            chefRating: reviewChefRating,
+            chefComment: chefComment || undefined,
+          }),
+        });
+      }
     } catch (error) {
       Alert.alert('Review failed', error instanceof Error ? error.message : 'Could not submit review.');
       return;
     }
     const next = {
       ...reviewState,
-      [reviewPromptOffer.id]: {
-        rating: reviewRating || undefined,
-        comment: comment || undefined,
+      [reviewPromptTarget.key]: {
+        foodRating: reviewFoodRating,
+        foodComment: foodComment || undefined,
+        chefRating: reviewChefRating,
+        chefComment: chefComment || undefined,
         submittedAt: new Date().toISOString(),
       },
     };
     await persistReviewState(next);
-    setReviewPromptOffer(null);
-    setReviewRating(0);
-    setReviewComment('');
+    setReviewPromptTarget(null);
+    setReviewFoodRating(0);
+    setReviewFoodComment('');
+    setReviewChefRating(0);
+    setReviewChefComment('');
     Alert.alert('Thank you', 'Your review helps us maintain quality and keep the best chefs visible.');
   };
 
@@ -2911,15 +3822,7 @@ export default function App() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
       >
-      {booting ? (
-        <View style={authSt.bootWrap}>
-          <View style={authSt.bootBadge}>
-            <Text style={authSt.bootBadgeText}>NeighbourBites</Text>
-          </View>
-          <Text style={authSt.bootTitle}>Checking your buyer session</Text>
-          <Text style={authSt.bootSub}>Loading account access and nearby cravings.</Text>
-        </View>
-      ) : null}
+      {booting ? <BootSplashScreen /> : null}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Location Picker Modal ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       
@@ -3083,6 +3986,33 @@ export default function App() {
                   </View>
                 </TouchableOpacity>
               ))}
+            <View style={locSt.savedAddressesBlock}>
+              <Text style={locSt.savedAddressesTitle}>Saved addresses</Text>
+              {!savedAddressesReady ? (
+                <Text style={locSt.savedAddressesHint}>Loading saved addresses...</Text>
+              ) : otherSavedAddresses.length === 0 ? (
+                <Text style={locSt.savedAddressesHint}>No other saved addresses yet.</Text>
+              ) : (
+                otherSavedAddresses.map((address) => (
+                  <TouchableOpacity
+                    key={address.id}
+                    style={locSt.savedAddressCard}
+                    activeOpacity={0.78}
+                    onPress={() => selectSavedAddress(address)}
+                  >
+                    <View style={locSt.savedAddressIconWrap}>
+                      <Text style={locSt.savedAddressIcon}>
+                        {address.label.toLowerCase() === 'home' ? '⌂' : address.label.toLowerCase() === 'office' ? '▣' : '✎'}
+                      </Text>
+                    </View>
+                    <View style={locSt.savedAddressCopy}>
+                      <Text style={locSt.savedAddressLabel}>{address.label}</Text>
+                      <Text style={locSt.savedAddressText}>{address.address}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))
+              )}
+            </View>
             <TouchableOpacity style={locSt.saveBtn} activeOpacity={0.85} onPress={saveLocationSelection}>
               <Text style={locSt.saveBtnText}>Save location</Text>
             </TouchableOpacity>
@@ -3507,8 +4437,8 @@ export default function App() {
                   item={item}
                   timeLeft={cookTimeLeft(item.etaMin)}
                   bargainSent={!!homeBargainSent[item.dish]}
-                  onChefPress={() => goPublicChef({ id: item.chefId, name: item.chefName, initial: item.chefInitial, dish: item.dish, distance: item.distance, rating: item.rating, tags: item.tags, price: item.price, eta: cookTimeLeft(item.readyAt) ?? 'Ready now', serves: item.serves })}
-                  onOrderPress={() => openHomeBargain({ dishId: item.id, chefId: item.chefId, name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.serves })}
+                  onChefPress={() => goPublicChef({ id: item.chefId, name: item.chefName, initial: item.chefInitial, dish: item.dish, distance: item.distance, distanceKm: item.distanceKm, rating: item.rating, tags: item.tags, price: item.price, eta: item.status === 'ready' ? 'Ready now' : (cookTimeLeft(item.readyAt) ?? 'Soon'), serves: item.availablePlates, lat: item.chefLat, lng: item.chefLng })}
+                  onOrderPress={() => openHomeBargain({ dishId: item.id, chefId: item.chefId, name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.availablePlates })}
                 />
               ))}
           </ScrollView>
@@ -3517,7 +4447,45 @@ export default function App() {
         </>
       ) : null}
 
-      {screen === 'explore' ? (
+      {screen === 'explore' ? (() => {
+        const exploreDishPress = (item: CookingFeedCard) => goPublicChef({ id: item.chefId, name: item.chefName, initial: item.chefInitial, dish: item.dish, distance: item.distance, distanceKm: item.distanceKm, rating: item.rating, tags: item.tags, price: item.price, eta: item.status === 'ready' ? 'Ready now' : (cookTimeLeft(item.readyAt) ?? 'Soon'), serves: item.availablePlates, lat: item.chefLat, lng: item.chefLng });
+        const exploreOrderPress = (item: CookingFeedCard) => openHomeBargain({ dishId: item.id, chefId: item.chefId, name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.availablePlates });
+
+        const query = exploreSearch.trim().toLowerCase();
+        const searched = query
+          ? filteredCooking.filter((item) =>
+              item.dish.toLowerCase().includes(query)
+              || item.chefName.toLowerCase().includes(query)
+              || item.tags.some((tag) => tag.toLowerCase().includes(query))
+            )
+          : filteredCooking;
+
+        const cuisines = Array.from(new Set(filteredCooking.map((item) => item.tags[0]).filter((tag): tag is string => !!tag)));
+        const categoryFiltered = exploreCuisine ? searched.filter((item) => item.tags[0] === exploreCuisine) : searched;
+
+        const readyItems = categoryFiltered.filter((item) => item.status === 'ready').slice(0, 10);
+        const preOrderItems = categoryFiltered.filter((item) => item.status === 'cooking').slice(0, 10);
+        // Same "fresh" window CookingDishCard uses for its 🌿 Fresh meta label.
+        const freshItems = categoryFiltered
+          .filter((item) => item.status === 'ready' && (Date.now() - new Date(item.updatedAt).getTime()) < 60 * 60 * 1000)
+          .slice(0, 10);
+
+        const chefMap = new Map<string, ExploreChefSummary>();
+        categoryFiltered.forEach((item) => {
+          if (!item.chefId) return;
+          const existing = chefMap.get(item.chefId);
+          if (existing) { existing.dishCount += 1; return; }
+          chefMap.set(item.chefId, {
+            id: item.chefId, name: item.chefName, initial: item.chefInitial, rating: item.rating,
+            dishCount: 1, distance: item.distance, cuisine: item.tags[0] ?? 'Home cooking', topDish: item.dish,
+          });
+        });
+        const chefs = Array.from(chefMap.values()).slice(0, 10);
+
+        const hasAnyLive = filteredCooking.length > 0;
+        const noResults = !cookingLoading && hasAnyLive && categoryFiltered.length === 0;
+
+        return (
         <>
           <View style={styles.postHeader}>
             <TouchableOpacity style={styles.backBtn} activeOpacity={0.75} onPress={goHome}>
@@ -3535,15 +4503,21 @@ export default function App() {
             contentContainerStyle={styles.profileScrollContent}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshBuyerData} tintColor={C.mint} />}
           >
-            <View style={exploreSt.hero}>
-              <View style={exploreSt.heroTextWrap}>
-                <Text style={exploreSt.heroKicker}>TODAY BOARD</Text>
-                <Text style={exploreSt.heroTitle}>Nearby dishes live from home chefs</Text>
-                <Text style={exploreSt.heroSub}>Everything listed by chefs for today, filtered by your current geo radius.</Text>
-              </View>
-              <View style={exploreSt.heroBadge}>
-                <Text style={exploreSt.heroBadgeEmoji}>🍲</Text>
-              </View>
+            <View style={exploreSt.searchBar}>
+              <Text style={exploreSt.searchIcon}>{'🔍'}</Text>
+              <TextInput
+                style={exploreSt.searchInput}
+                value={exploreSearch}
+                onChangeText={setExploreSearch}
+                placeholder="Search dishes, cuisines or chefs..."
+                placeholderTextColor={C.warmGray}
+                returnKeyType="search"
+              />
+              {exploreSearch.length > 0 ? (
+                <TouchableOpacity onPress={() => setExploreSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={exploreSt.searchClear}>✕</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
 
             <View style={feedSt.geoBanner}>
@@ -3558,16 +4532,52 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
-            <View style={exploreSt.statsRow}>
-              <View style={exploreSt.statCard}>
-                <Text style={exploreSt.statValue}>{filteredCooking.length}</Text>
-                <Text style={exploreSt.statLabel}>Live dishes</Text>
-              </View>
-              <View style={exploreSt.statCard}>
-                <Text style={exploreSt.statValue}>{new Set(filteredCooking.map((item) => item.chefId)).size}</Text>
-                <Text style={exploreSt.statLabel}>Nearby chefs</Text>
-              </View>
-            </View>
+            {!query ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                snapToInterval={SCREEN_W - 48}
+                decelerationRate="fast"
+                contentContainerStyle={exploreSt.promoScroll}
+              >
+                <ExplorePromoCard
+                  kicker="TODAY BOARD"
+                  title="Nearby dishes live from home chefs"
+                  sub={`${filteredCooking.length} dishes within ${geoRadius} km right now`}
+                  emoji={'\uD83C\uDF72'}
+                  tint="#DFF3EA"
+                />
+                <ExplorePromoCard
+                  kicker="CHEFS ONLINE"
+                  title={`${new Set(filteredCooking.map((item) => item.chefId)).size} home chefs cooking now`}
+                  sub="Browse their kitchens and save your favourites"
+                  emoji={'\uD83D\uDC68\u200D\uD83C\uDF73'}
+                  tint="#FDE8DC"
+                />
+              </ScrollView>
+            ) : null}
+
+            {cuisines.length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={exploreSt.chipScroll}>
+                <TouchableOpacity
+                  style={[exploreSt.catChip, exploreCuisine === null && exploreSt.catChipActive]}
+                  activeOpacity={0.8}
+                  onPress={() => setExploreCuisine(null)}
+                >
+                  <Text style={[exploreSt.catChipText, exploreCuisine === null && exploreSt.catChipTextActive]}>All</Text>
+                </TouchableOpacity>
+                {cuisines.map((cuisine) => (
+                  <TouchableOpacity
+                    key={cuisine}
+                    style={[exploreSt.catChip, exploreCuisine === cuisine && exploreSt.catChipActive]}
+                    activeOpacity={0.8}
+                    onPress={() => setExploreCuisine((current) => (current === cuisine ? null : cuisine))}
+                  >
+                    <Text style={[exploreSt.catChipText, exploreCuisine === cuisine && exploreSt.catChipTextActive]}>{cuisine}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : null}
 
             {cookingLoading ? (
               <BuyerHomeEmptyState
@@ -3575,31 +4585,110 @@ export default function App() {
                 title="Loading nearby dishes"
                 subtitle="Pulling today-board listings from nearby chefs."
               />
-            ) : filteredCooking.length === 0 ? (
+            ) : !hasAnyLive ? (
               <BuyerHomeEmptyState
                 emoji={'\uD83C\uDF72'}
                 title={userCoords ? `Nothing listed within ${geoRadius} km` : 'No live dishes yet'}
                 subtitle={userCoords ? 'Try increasing your radius or changing your location.' : 'Nearby chef dishes will appear here once they start cooking.'}
               />
+            ) : noResults ? (
+              <BuyerHomeEmptyState
+                emoji={'\uD83D\uDD0D'}
+                title="No matches"
+                subtitle="Try a different search term or clear the cuisine filter."
+              />
             ) : (
               <>
-                {filteredCooking.map((item) => (
-                  <CookingDishCard
-                    key={`explore-${item.id}`}
-                    item={item}
-                    timeLeft={cookTimeLeft(item.etaMin)}
-                    bargainSent={!!homeBargainSent[item.dish]}
-                    onChefPress={() => goPublicChef({ id: item.chefId, name: item.chefName, initial: item.chefInitial, dish: item.dish, distance: item.distance, rating: item.rating, tags: item.tags, price: item.price, eta: cookTimeLeft(item.readyAt) ?? 'Ready now', serves: item.serves })}
-                    onOrderPress={() => openHomeBargain({ dishId: item.id, chefId: item.chefId, name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.serves })}
-                  />
-                ))}
+                {freshItems.length > 0 ? (
+                  <View style={exploreSt.section}>
+                    <ExploreSectionHeader icon={'\uD83C\uDF3F'} title="Serving Fresh" count={freshItems.length} />
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={exploreSt.railScroll}>
+                      {freshItems.map((item) => (
+                        <ExploreDishCarouselCard
+                          key={`fresh-${item.id}`}
+                          item={item}
+                          timeLeft={cookTimeLeft(item.etaMin)}
+                          bargainSent={!!homeBargainSent[item.dish]}
+                          onChefPress={() => exploreDishPress(item)}
+                          onOrderPress={() => exploreOrderPress(item)}
+                        />
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
+
+                {readyItems.length > 0 ? (
+                  <View style={exploreSt.section}>
+                    <ExploreSectionHeader icon={'\uD83D\uDD25'} title="Ready Now" count={readyItems.length} />
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={exploreSt.railScroll}>
+                      {readyItems.map((item) => (
+                        <ExploreDishCarouselCard
+                          key={`ready-${item.id}`}
+                          item={item}
+                          timeLeft={cookTimeLeft(item.etaMin)}
+                          bargainSent={!!homeBargainSent[item.dish]}
+                          onChefPress={() => exploreDishPress(item)}
+                          onOrderPress={() => exploreOrderPress(item)}
+                        />
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
+
+                {preOrderItems.length > 0 ? (
+                  <View style={exploreSt.section}>
+                    <ExploreSectionHeader icon={'\uD83C\uDF73'} title="Pre-Order & Cooking" count={preOrderItems.length} />
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={exploreSt.railScroll}>
+                      {preOrderItems.map((item) => (
+                        <ExploreDishCarouselCard
+                          key={`preorder-${item.id}`}
+                          item={item}
+                          timeLeft={cookTimeLeft(item.etaMin)}
+                          bargainSent={!!homeBargainSent[item.dish]}
+                          onChefPress={() => exploreDishPress(item)}
+                          onOrderPress={() => exploreOrderPress(item)}
+                        />
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
+
+                {chefs.length > 0 ? (
+                  <View style={exploreSt.section}>
+                    <ExploreSectionHeader icon={'\uD83D\uDC68\u200D\uD83C\uDF73'} title="Chefs Near You" count={chefs.length} />
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={exploreSt.railScroll}>
+                      {chefs.map((chef) => (
+                        <ExploreChefRailCard
+                          key={`chef-${chef.id}`}
+                          chef={chef}
+                          onPress={() => goPublicChef({ id: chef.id, name: chef.name, initial: chef.initial, dish: chef.topDish, distance: chef.distance, rating: chef.rating, tags: [chef.cuisine], price: 0, eta: 'View menu', serves: 0 })}
+                        />
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
+
+                <View style={exploreSt.section}>
+                  <ExploreSectionHeader icon={'\uD83D\uDCCB'} title="All Dishes" count={categoryFiltered.length} />
+                  {categoryFiltered.map((item) => (
+                    <CookingDishCard
+                      key={`explore-${item.id}`}
+                      item={item}
+                      timeLeft={cookTimeLeft(item.etaMin)}
+                      bargainSent={!!homeBargainSent[item.dish]}
+                      onChefPress={() => exploreDishPress(item)}
+                      onOrderPress={() => exploreOrderPress(item)}
+                    />
+                  ))}
+                </View>
               </>
             )}
           </ScrollView>
 
           <BottomNav active="explore" onHomePress={goHome} onExplorePress={goExplore} onRequestPress={goRequest} onOrdersPress={goOrders} onProfilePress={goProfile} />
         </>
-      ) : null}
+        );
+      })() : null}
 
       {screen === 'post-request' ? (
         <>
@@ -3731,10 +4820,10 @@ export default function App() {
             </View>
 
             <View style={styles.fieldGroup}>
-              <FieldLabel text="Spice Level" />
+              <FieldLabel text={spiceDisplay.sectionLabel} />
               <View style={styles.chipRow}>
                 {SPICE_LEVELS.map((item) => (
-                  <Chip key={item.id} label={item.label} selected={spice === item.id} onPress={() => setSpice(item.id)} />
+                  <Chip key={item.id} label={spiceDisplay.labels[item.id] ?? item.label} selected={spice === item.id} onPress={() => setSpice(item.id)} />
                 ))}
               </View>
             </View>
@@ -3745,13 +4834,13 @@ export default function App() {
                 {visiblePrefs.map((item) => (
                   <Chip key={item.id} label={item.label} selected={prefs.includes(item.id)} onPress={() => togglePref(item.id)} />
                 ))}
-                {!showAllPrefs && PREFS.length > collapsedPrefs.length ? (
+                {!showAllPrefs && categoryPrefs.length > collapsedPrefs.length ? (
                   <TouchableOpacity style={styles.prefInlineMoreBtn} onPress={() => setShowAllPrefs(true)} activeOpacity={0.75}>
                     <Text style={styles.prefInlineMoreText}>See more</Text>
                   </TouchableOpacity>
                 ) : null}
               </View>
-              {showAllPrefs && PREFS.length > collapsedPrefs.length ? (
+              {showAllPrefs && categoryPrefs.length > collapsedPrefs.length ? (
                 <TouchableOpacity style={styles.prefMoreBtn} onPress={() => setShowAllPrefs((current) => !current)} activeOpacity={0.75}>
                   <Text style={styles.prefMoreText}>See less</Text>
                 </TouchableOpacity>
@@ -4054,87 +5143,77 @@ export default function App() {
               </View>
             </View>
 
-            {buyerOrderSections.map((section) => (
-              <View key={section.key}>
-                <View style={orderTabSt.sectionHeader}>
-                  <Text style={orderTabSt.sectionEmoji}>{section.emoji}</Text>
-                  <Text style={orderTabSt.sectionTitle}>{section.title}</Text>
-                  {section.count > 0 ? (
-                    <View style={[orderTabSt.sectionBadge, { backgroundColor: section.badgeBg }]}>
-                      <Text style={orderTabSt.sectionBadgeText}>{section.count}</Text>
-                    </View>
-                  ) : null}
+            <View style={orderTabSt.tabBarWrap}>
+              <OrdersTabBar active={ordersTab} onSwitch={setOrdersTab} tabs={buyerOrderSections} />
+            </View>
+
+            {ordersTab === 'approval' ? (
+              pendingApprovalOrders.length === 0 ? (
+                <View style={orderTabSt.emptyCard}>
+                  <Text style={orderTabSt.emptyEmoji}>⏳</Text>
+                  <Text style={orderTabSt.emptyTitle}>Nothing awaiting approval</Text>
+                  <Text style={orderTabSt.emptySub}>When you place an order at the chef's listed price, they must accept it before payment opens.</Text>
                 </View>
+              ) : pendingApprovalOrders.map((offer) => (
+                <PendingApprovalCard key={offer.id} offer={offer} />
+              ))
+            ) : null}
 
-                {section.key === 'approval' ? (
-                  pendingApprovalOrders.length === 0 ? (
-                    <View style={orderTabSt.emptyCard}>
-                      <Text style={orderTabSt.emptyEmoji}>⏳</Text>
-                      <Text style={orderTabSt.emptyTitle}>Nothing awaiting approval</Text>
-                      <Text style={orderTabSt.emptySub}>When you place an order at the chef's listed price, they must accept it before payment opens.</Text>
-                    </View>
-                  ) : pendingApprovalOrders.map((offer) => (
-                    <PendingApprovalCard key={offer.id} offer={offer} />
-                  ))
-                ) : null}
+            {ordersTab === 'payment' ? (
+              holdOrders.length + requestHoldOrders.length === 0 ? (
+                <View style={orderTabSt.emptyCard}>
+                  <Text style={orderTabSt.emptyEmoji}>💳</Text>
+                  <Text style={orderTabSt.emptyTitle}>No orders waiting for payment</Text>
+                  <Text style={orderTabSt.emptySub}>Once the chef accepts, the dish is held here for 10 minutes so you can complete payment.</Text>
+                </View>
+              ) : (
+                <>
+                  {holdOrders.map((offer) => (
+                    <HoldOrderCard
+                      key={offer.id}
+                      offer={offer}
+                      timeLeft={holdTimeLeft(offer.holdUntil)}
+                      onPay={() => {
+                        setCheckoutRequestOrder(null);
+                        setCheckoutOffer(offer);
+                        setCheckoutDelivery(offer.deliveryMode ?? 'pickup');
+                        setBringOwnContainer(false);
+                      }}
+                    />
+                  ))}
+                  {requestHoldOrders.map((order) => (
+                    <RequestHoldOrderCard
+                      key={order.id}
+                      order={order}
+                      timeLeft={holdTimeLeft(order.holdUntil)}
+                      onPay={() => {
+                        setCheckoutOffer(null);
+                        setCheckoutRequestOrder(order);
+                      }}
+                    />
+                  ))}
+                </>
+              )
+            ) : null}
 
-                {section.key === 'payment' ? (
-                  holdOrders.length + requestHoldOrders.length === 0 ? (
-                    <View style={orderTabSt.emptyCard}>
-                      <Text style={orderTabSt.emptyEmoji}>💳</Text>
-                      <Text style={orderTabSt.emptyTitle}>No orders waiting for payment</Text>
-                      <Text style={orderTabSt.emptySub}>Once the chef accepts, the dish is held here for 10 minutes so you can complete payment.</Text>
-                    </View>
-                  ) : (
-                    <>
-                      {holdOrders.map((offer) => (
-                        <HoldOrderCard
-                          key={offer.id}
-                          offer={offer}
-                          timeLeft={holdTimeLeft(offer.holdUntil)}
-                          onPay={() => {
-                            setCheckoutRequestOrder(null);
-                            setCheckoutOffer(offer);
-                            setCheckoutDelivery(offer.deliveryMode ?? 'pickup');
-                            setBringOwnContainer(false);
-                          }}
-                        />
-                      ))}
-                      {requestHoldOrders.map((order) => (
-                        <RequestHoldOrderCard
-                          key={order.id}
-                          order={order}
-                          timeLeft={holdTimeLeft(order.holdUntil)}
-                          onPay={() => {
-                            setCheckoutOffer(null);
-                            setCheckoutRequestOrder(order);
-                          }}
-                        />
-                      ))}
-                    </>
-                  )
-                ) : null}
-
-                {section.key === 'confirmed' ? (
-                  placedOrders.length + requestPlacedOrders.length === 0 ? (
-                    <View style={orderTabSt.emptyCard}>
-                      <Text style={orderTabSt.emptyEmoji}>📦</Text>
-                      <Text style={orderTabSt.emptyTitle}>No confirmed orders yet</Text>
-                      <Text style={orderTabSt.emptySub}>Paid orders appear here instantly after payment succeeds.</Text>
-                    </View>
-                  ) : (
-                    <>
-                      {placedOrders.map((offer) => (
-                        <PlacedOrderCard key={offer.id} offer={offer} onPayBalance={offer.status === 'ADVANCE_PAID' ? () => payBalanceForOffer(offer) : undefined} />
-                      ))}
-                      {requestPlacedOrders.map((order) => (
-                        <RequestPlacedOrderCard key={order.id} order={order} onPayBalance={order.paymentStatus === 'ADVANCE_PAID' ? () => payBalanceForRequestOrder(order) : undefined} />
-                      ))}
-                    </>
-                  )
-                ) : null}
-              </View>
-            ))}
+            {ordersTab === 'confirmed' ? (
+              placedOrders.length + requestPlacedOrders.length === 0 ? (
+                <View style={orderTabSt.emptyCard}>
+                  <Text style={orderTabSt.emptyEmoji}>📦</Text>
+                  <Text style={orderTabSt.emptyTitle}>No confirmed orders yet</Text>
+                  <Text style={orderTabSt.emptySub}>Paid orders appear here instantly after payment succeeds.</Text>
+                </View>
+              ) : (
+                <>
+                  {placedOrders.map((offer) => (
+                    <PlacedOrderCard key={offer.id} offer={offer} onPayBalance={offer.status === 'ADVANCE_PAID' ? () => payBalanceForOffer(offer) : undefined} />
+                  ))}
+                  {requestPlacedOrders.map((order) => (
+                    <RequestPlacedOrderCard key={order.id} order={order} onPayBalance={order.paymentStatus === 'ADVANCE_PAID' ? () => payBalanceForRequestOrder(order) : undefined} />
+                  ))}
+                </>
+              )
+            ) : null}
 
           </ScrollView>
 
@@ -4142,36 +5221,56 @@ export default function App() {
         </>
       ) : null}
 
-      <Modal visible={reviewPromptOffer !== null} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={reviewPromptTarget !== null} transparent animationType="fade" onRequestClose={() => {}}>
         <View style={reviewPromptSt.backdrop}>
           <View style={reviewPromptSt.sheet}>
             <View style={reviewPromptSt.badge}>
               <Text style={reviewPromptSt.badgeText}>REVIEW REMINDER</Text>
             </View>
             <Text style={reviewPromptSt.title}>How was your order?</Text>
-            {reviewPromptOffer ? (
+            {reviewPromptTarget ? (
               <Text style={reviewPromptSt.sub}>
-                {reviewPromptOffer.dishEmoji} {reviewPromptOffer.dishName} · Your review helps us maintain our service and spotlight the best home chefs.
+                {reviewPromptTarget.dishEmoji} {reviewPromptTarget.dishName} by {reviewPromptTarget.chefName} · Rate both the food and the chef.
               </Text>
             ) : null}
 
-            <Text style={reviewPromptSt.label}>Tap to rate</Text>
+            <Text style={reviewPromptSt.label}>Food rating</Text>
             <View style={reviewPromptSt.starRow}>
               {[1, 2, 3, 4, 5].map((value) => (
-                <TouchableOpacity key={value} activeOpacity={0.8} onPress={() => setReviewRating(value)}>
-                  <Text style={[reviewPromptSt.star, value <= reviewRating && reviewPromptSt.starActive]}>*</Text>
+                <TouchableOpacity key={`food-${value}`} activeOpacity={0.8} onPress={() => setReviewFoodRating(value)}>
+                  <Text style={[reviewPromptSt.star, value <= reviewFoodRating && reviewPromptSt.starActive]}>★</Text>
                 </TouchableOpacity>
               ))}
             </View>
 
-            <Text style={reviewPromptSt.label}>Add a quick review</Text>
+            <Text style={reviewPromptSt.label}>Food review</Text>
             <TextInput
               style={reviewPromptSt.input}
-              value={reviewComment}
-              onChangeText={setReviewComment}
+              value={reviewFoodComment}
+              onChangeText={setReviewFoodComment}
               multiline
               textAlignVertical="top"
-              placeholder="Share what you loved, or what could be better."
+              placeholder="Taste, freshness, portion size, packaging..."
+              placeholderTextColor={C.warmGray}
+            />
+
+            <Text style={reviewPromptSt.label}>Chef rating</Text>
+            <View style={reviewPromptSt.starRow}>
+              {[1, 2, 3, 4, 5].map((value) => (
+                <TouchableOpacity key={`chef-${value}`} activeOpacity={0.8} onPress={() => setReviewChefRating(value)}>
+                  <Text style={[reviewPromptSt.star, value <= reviewChefRating && reviewPromptSt.starActive]}>★</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={reviewPromptSt.label}>Chef review</Text>
+            <TextInput
+              style={[reviewPromptSt.input, reviewPromptSt.inputCompact]}
+              value={reviewChefComment}
+              onChangeText={setReviewChefComment}
+              multiline
+              textAlignVertical="top"
+              placeholder="Communication, delivery experience, overall service..."
               placeholderTextColor={C.warmGray}
             />
 
@@ -4312,17 +5411,21 @@ export default function App() {
                   </TouchableOpacity>
 
                   <View style={notifSheetSt.actionRow}>
-                    <TouchableOpacity
-                      style={notifSheetSt.counterBtn}
-                      activeOpacity={0.85}
-                      onPress={() => {
-                        setSelectedNotification(null);
-                        setRespondOffer(counteredOffer);
-                        setRespondPrice(String(counteredOffer.offerPrice));
-                      }}
-                    >
-                      <Text style={notifSheetSt.counterBtnText}>Counter</Text>
-                    </TouchableOpacity>
+                    {(counteredOffer.buyerCounterCount ?? 0) < 1 ? (
+                      <TouchableOpacity
+                        style={notifSheetSt.counterBtn}
+                        activeOpacity={0.85}
+                        onPress={() => {
+                          setSelectedNotification(null);
+                          setRespondOffer(counteredOffer);
+                          setRespondPrice(String(counteredOffer.offerPrice));
+                        }}
+                      >
+                        <Text style={notifSheetSt.counterBtnText}>Counter</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <Text style={notifSheetSt.actionHint}>Your one counter is used. You can now only accept or reject.</Text>
+                    )}
                     <TouchableOpacity
                       style={notifSheetSt.rejectBtn}
                       activeOpacity={0.85}
@@ -5005,6 +6108,9 @@ export default function App() {
                   <Text style={negSt.lastCounterValue}>{'\u20B9'}{respondOffer.counterPrice}/plate</Text>
                   <Text style={negSt.lastCounterHint}>Your counter must be below this</Text>
                 </View>
+                <Text style={negSt.limitNote}>
+                  You can send only 1 counter offer. After this, you will only be able to accept or reject the chef&apos;s response.
+                </Text>
               </>
             ) : null}
             {(() => {
@@ -5289,13 +6395,13 @@ function PublicChefProfileScreen({
       }
     };
     loadProfile();
-    const intervalId = setInterval(loadProfile, 10000);
+    const intervalId = setInterval(loadProfile, 60000);
     return () => { active = false; clearInterval(intervalId); };
   }, [chef.id]);
 
   const timeLeft = (readyAt: string) => {
     const remaining = Math.floor((new Date(readyAt).getTime() - Date.now()) / 1000);
-    if (remaining <= 0) return 'Ready now!';
+    if (remaining <= 0) return 'Soon';
     const m = Math.floor(remaining / 60);
     const s = remaining % 60;
     return m > 0 ? `${m}m ${s.toString().padStart(2, '0')}s` : `${s}s`;
@@ -5307,12 +6413,15 @@ function PublicChefProfileScreen({
   const heroReviewCount = profile?.ratingCount ?? profile?.reviewsReceived.length ?? 0;
   const heroMemberYear = new Date(profile?.createdAt ?? Date.now()).getFullYear();
   const sortedDishes = [...liveDishes].sort((a, b) => new Date(a.readyAt).getTime() - new Date(b.readyAt).getTime());
-  const readyDishes = sortedDishes.filter((item) => item.status === 'ready' || new Date(item.readyAt).getTime() <= Date.now());
-  const cookingDishes = sortedDishes.filter((item) => item.status !== 'ready' && new Date(item.readyAt).getTime() > Date.now());
+  const readyDishes = sortedDishes.filter((item) => item.status === 'ready');
+  const cookingDishes = sortedDishes.filter((item) => item.status !== 'ready');
   const featuredDish = readyDishes[0] ?? null;
   const extraReadyDishes = readyDishes.slice(1);
   const styleTags = Array.from(new Set([profile?.cookingStyle, ...liveDishes.flatMap((item) => item.tags.slice(0, 2))].filter(Boolean))) as string[];
   const reviewItems = profile?.reviewsReceived ?? [];
+  const chefLat = profile?.lat ?? chef.lat ?? null;
+  const chefLng = profile?.lng ?? chef.lng ?? null;
+  const canNavigateToChef = typeof chefLat === 'number' && typeof chefLng === 'number';
 
   const reportChef = (reason: ModerationReason) => {
     submitModerationReport({
@@ -5379,6 +6488,20 @@ function PublicChefProfileScreen({
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
+  };
+
+  const openChefNavigation = async () => {
+    if (!canNavigateToChef) {
+      Alert.alert('Location unavailable', 'This chef has not shared a map location yet.');
+      return;
+    }
+    const destination = `${chefLat},${chefLng}`;
+    const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=driving`;
+    try {
+      await Linking.openURL(googleMapsUrl);
+    } catch {
+      Alert.alert('Navigation unavailable', 'Could not open Google Maps navigation right now.');
+    }
   };
 
 
@@ -5512,6 +6635,14 @@ function PublicChefProfileScreen({
             </View>
             {profile?.bio ? <Text style={pubSt.bioText}>{profile.bio}</Text> : null}
             {loading ? <Text style={pubSt.bioText}>Loading chef profile...</Text> : null}
+            <TouchableOpacity
+              style={[pubSt.navigateBtn, !canNavigateToChef && pubSt.navigateBtnDisabled]}
+              activeOpacity={0.82}
+              onPress={openChefNavigation}
+              disabled={!canNavigateToChef}
+            >
+              <Text style={pubSt.navigateBtnText}>{canNavigateToChef ? 'Navigate for self pickup' : 'Navigation unavailable'}</Text>
+            </TouchableOpacity>
             <View style={pubSt.modRow}>
               <TouchableOpacity style={pubSt.modBtn} activeOpacity={0.8} onPress={openChefReportMenu}>
                 <Text style={pubSt.modBtnText}>Report Chef</Text>
@@ -5553,10 +6684,10 @@ function PublicChefProfileScreen({
                 <View style={pubSt.hotBadge}><Text style={pubSt.hotBadgeText}>Live</Text></View>
               </View>
               <Text style={pubSt.hotDish}>{featuredDish.dish}</Text>
-              <View style={pubSt.hotPriceRow}>
+                <View style={pubSt.hotPriceRow}>
                   <Text style={pubSt.hotEta}>₹{featuredDish?.price ?? chef.price}</Text>
                 <View style={pubSt.hotPlatesBadge}>
-                    <Text style={pubSt.hotPlatesText}>{featuredDish?.serves ?? chef.serves} plates</Text>
+                    <Text style={pubSt.hotPlatesText}>{featuredDish?.quantityLabel ?? `${chef.serves} plates`}</Text>
                 </View>
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={pubSt.hotTagRow}>
@@ -5569,7 +6700,7 @@ function PublicChefProfileScreen({
                   <Text style={pubSt.bargainSentText}>Offer ₹{bargainSent[featuredDish?.dish ?? chef.dish]} sent</Text>
                 </View>
               ) : (
-                <TouchableOpacity style={pubSt.bargainBtn} activeOpacity={0.8} onPress={() => openBargain({ name: featuredDish?.dish ?? chef.dish, emoji: featuredDish?.emoji ?? 'Dish', chefPrice: featuredDish?.price ?? chef.price, maxPlates: featuredDish?.serves ?? chef.serves })}>
+                <TouchableOpacity style={pubSt.bargainBtn} activeOpacity={0.8} onPress={() => openBargain({ name: featuredDish?.dish ?? chef.dish, emoji: featuredDish?.emoji ?? 'Dish', chefPrice: featuredDish?.price ?? chef.price, maxPlates: featuredDish?.availablePlates ?? chef.serves })}>
                   <Text style={pubSt.bargainBtnText}>Order Now</Text>
                 </TouchableOpacity>
               )}
@@ -5595,7 +6726,7 @@ function PublicChefProfileScreen({
                 <View style={pubSt.hotPriceRow}>
                   <Text style={pubSt.hotEta}>₹{item.price}</Text>
                   <View style={pubSt.hotPlatesBadge}>
-                    <Text style={pubSt.hotPlatesText}>Plates {item.serves}</Text>
+                    <Text style={pubSt.hotPlatesText}>{item.quantityLabel}</Text>
                   </View>
                 </View>
                 <View style={pubSt.hotTagRow}>
@@ -5608,7 +6739,7 @@ function PublicChefProfileScreen({
                     <Text style={pubSt.bargainSentText}>Offer ₹{bargainSent[item.dish]} sent</Text>
                   </View>
                 ) : (
-                  <TouchableOpacity style={pubSt.bargainBtn} activeOpacity={0.8} onPress={() => openBargain({ name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.serves })}>
+                  <TouchableOpacity style={pubSt.bargainBtn} activeOpacity={0.8} onPress={() => openBargain({ name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.availablePlates })}>
                     <Text style={pubSt.bargainBtnText}>Order Now</Text>
                   </TouchableOpacity>
                 )}
@@ -5641,7 +6772,7 @@ function PublicChefProfileScreen({
                     <Text style={pubSt.bargainSentText}>Offer ₹{bargainSent[item.dish]} sent</Text>
                   </View>
                 ) : (
-                  <TouchableOpacity style={[pubSt.bargainBtn, pubSt.preOrderBtn]} activeOpacity={0.8} onPress={() => openBargain({ name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.serves })}>
+                  <TouchableOpacity style={[pubSt.bargainBtn, pubSt.preOrderBtn]} activeOpacity={0.8} onPress={() => openBargain({ name: item.dish, emoji: item.emoji, chefPrice: item.price, maxPlates: item.availablePlates })}>
                     <Text style={pubSt.bargainBtnText}>Pre-Order</Text>
                   </TouchableOpacity>
                 )}
@@ -5833,6 +6964,19 @@ const pubSt = StyleSheet.create({
   ratingVal: { fontSize: 15, fontWeight: '800', color: C.ink },
   ratingCount: { fontSize: 12, color: C.warmGray },
   bioText: { fontSize: 13, color: C.warmGray, textAlign: 'center', marginTop: 10, lineHeight: 19, paddingHorizontal: 10 },
+  navigateBtn: {
+    marginTop: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: C.mint,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  navigateBtnDisabled: {
+    backgroundColor: C.border,
+  },
+  navigateBtnText: { fontSize: 13, fontWeight: '800', color: C.white },
   statsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingVertical: 14, backgroundColor: C.white, borderBottomWidth: 1, borderBottomColor: C.border },
   statItem: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 16 },
   statDivider: {},
@@ -6325,6 +7469,8 @@ function CookingDishCard({
   }, []);
 
   const isReady = item.status === 'ready';
+  const listingAgeLabel = getListingAgeLabel(item.updatedAt);
+  const displayDishRating = item.dishRatingCount > 0 ? item.dishRatingAverage.toFixed(1) : item.rating.toFixed(1);
 
   return (
     <Animated.View style={[feedSt.cookCard, { transform: [{ scale: cardScale }] }]}>
@@ -6364,9 +7510,11 @@ function CookingDishCard({
       <View style={feedSt.cookFooter}>
         <View style={feedSt.cookFooterLeft}>
           <View style={feedSt.cookRatingBadge}>
-            <Text style={feedSt.cookRatingBadgeText}>★ {item.rating}</Text>
+            <Text style={feedSt.cookRatingBadgeText}>★ {displayDishRating}</Text>
           </View>
-          <Text style={feedSt.cookMetaItem}>· Serves {item.serves}</Text>
+          {item.dishRatingCount > 0 ? <Text style={feedSt.cookFreshMeta}>· {item.dishRatingCount} review{item.dishRatingCount > 1 ? 's' : ''}</Text> : null}
+          {isReady ? <Text style={feedSt.cookFreshMeta}>· {listingAgeLabel}</Text> : null}
+          <Text style={feedSt.cookMetaItem}>· {item.quantityLabel}</Text>
         </View>
         <View style={feedSt.cookFooterRight}>
           <Text style={feedSt.cookPrice}>Rs {item.price}</Text>
@@ -6386,6 +7534,140 @@ function CookingDishCard({
         </View>
       </View>
     </Animated.View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  EXPLORE CATALOGUE (Swiggy/Zomato-style browse UI — presentational only,
+//  wired to the same handlers/state the plain list already used)
+// ─────────────────────────────────────────────────────────────────────────
+function ExplorePromoCard({
+  kicker, title, sub, emoji, tint,
+}: {
+  kicker: string;
+  title: string;
+  sub: string;
+  emoji: string;
+  tint: string;
+}) {
+  return (
+    <View style={[exploreSt.promoCard, { backgroundColor: tint }]}>
+      <View style={exploreSt.promoBlob} />
+      <View style={exploreSt.promoTextWrap}>
+        <Text style={exploreSt.promoKicker} numberOfLines={1}>{kicker}</Text>
+        <Text style={exploreSt.promoTitle} numberOfLines={2}>{title}</Text>
+        <Text style={exploreSt.promoSub} numberOfLines={2}>{sub}</Text>
+      </View>
+      <Text style={exploreSt.promoEmoji}>{emoji}</Text>
+    </View>
+  );
+}
+
+function ExploreSectionHeader({
+  icon, title, count,
+}: {
+  icon: string;
+  title: string;
+  count?: number;
+}) {
+  return (
+    <View style={exploreSt.sectionHeaderRow}>
+      <View style={exploreSt.sectionHeaderLeft}>
+        <Text style={exploreSt.sectionHeaderIcon}>{icon}</Text>
+        <Text style={exploreSt.sectionHeaderTitle}>{title}</Text>
+      </View>
+      {count != null ? (
+        <View style={exploreSt.sectionHeaderBadge}>
+          <Text style={exploreSt.sectionHeaderBadgeText}>{count}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function ExploreDishCarouselCard({
+  item, timeLeft, bargainSent, onChefPress, onOrderPress,
+}: {
+  item: CookingFeedCard;
+  timeLeft: string | null;
+  bargainSent: boolean;
+  onChefPress: () => void;
+  onOrderPress: () => void;
+}) {
+  const isReady = item.status === 'ready';
+  const displayDishRating = item.dishRatingCount > 0 ? item.dishRatingAverage.toFixed(1) : item.rating.toFixed(1);
+  return (
+    <View style={exploreSt.railCard}>
+      <View style={exploreSt.railImgBox}>
+        {item.imageUri ? (
+          <Image source={{ uri: item.imageUri }} style={exploreSt.railImg} />
+        ) : (
+          <View style={[exploreSt.railImgFallback, { backgroundColor: item.emojiBg }]}>
+            <Text style={exploreSt.railImgEmoji}>{item.emoji}</Text>
+          </View>
+        )}
+        <View style={[exploreSt.railEtaBadge, isReady && exploreSt.railEtaBadgeReady]}>
+          <Text style={exploreSt.railEtaText}>{isReady ? 'Ready' : `⏱ ${timeLeft ?? 'Soon'}`}</Text>
+        </View>
+        <View style={exploreSt.railRatingBadge}>
+          <Text style={exploreSt.railRatingText}>★ {displayDishRating}</Text>
+        </View>
+      </View>
+
+      <View style={exploreSt.railBody}>
+        <Text style={exploreSt.railDish} numberOfLines={1}>{item.dish}</Text>
+        <TouchableOpacity activeOpacity={0.7} onPress={onChefPress} style={exploreSt.railChefRow}>
+          <Text style={exploreSt.railChefName} numberOfLines={1}>{item.chefName}</Text>
+          <Text style={exploreSt.railDist}>· {item.distance}</Text>
+        </TouchableOpacity>
+        <Text style={exploreSt.railQty} numberOfLines={1}>{item.quantityLabel}</Text>
+
+        <View style={exploreSt.railFooter}>
+          <Text style={exploreSt.railPrice}>Rs {item.price}</Text>
+          {bargainSent ? (
+            <View style={exploreSt.railCtaSent}>
+              <Text style={exploreSt.railCtaSentText}>Sent ✓</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[exploreSt.railCta, !isReady && exploreSt.railCtaPreOrder]}
+              activeOpacity={0.85}
+              onPress={onOrderPress}
+            >
+              <Text style={exploreSt.railCtaText}>{isReady ? 'Order' : 'Pre-Order'}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+type ExploreChefSummary = {
+  id: string;
+  name: string;
+  initial: string;
+  rating: number;
+  dishCount: number;
+  distance: string;
+  cuisine: string;
+  topDish: string;
+};
+
+function ExploreChefRailCard({ chef, onPress }: { chef: ExploreChefSummary; onPress: () => void }) {
+  return (
+    <TouchableOpacity style={exploreSt.chefRailCard} activeOpacity={0.85} onPress={onPress}>
+      <View style={exploreSt.chefRailAvatar}>
+        <Text style={exploreSt.chefRailAvatarText}>{chef.initial}</Text>
+      </View>
+      <Text style={exploreSt.chefRailName} numberOfLines={1}>{chef.name}</Text>
+      <View style={exploreSt.chefRailRatingPill}>
+        <Text style={exploreSt.chefRailRatingText}>★ {chef.rating.toFixed(1)}</Text>
+        <Text style={exploreSt.chefRailDot}>·</Text>
+        <Text style={exploreSt.chefRailDishCount}>{chef.dishCount} live</Text>
+      </View>
+      <Text style={exploreSt.chefRailCuisine} numberOfLines={1}>{chef.cuisine} · {chef.distance}</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -6909,6 +8191,56 @@ function BuyerHomeTabs({
   );
 }
 
+function OrdersTabBar({
+  active, onSwitch, tabs,
+}: {
+  active: string;
+  onSwitch: (key: 'payment' | 'approval' | 'confirmed') => void;
+  tabs: Array<{ key: 'payment' | 'approval' | 'confirmed'; label: string; count: number; badgeBg: string }>;
+}) {
+  const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.key === active));
+  const slideAnim = useRef(new Animated.Value(activeIndex)).current;
+
+  useEffect(() => {
+    Animated.spring(slideAnim, {
+      toValue: activeIndex,
+      useNativeDriver: false,
+      tension: 110,
+      friction: 11,
+    }).start();
+  }, [activeIndex, slideAnim]);
+
+  const barWidth = SCREEN_W - 44;
+  const tabWidth = barWidth / tabs.length;
+  const translateX = slideAnim.interpolate({
+    inputRange: tabs.map((_, i) => i),
+    outputRange: tabs.map((_, i) => 2 + i * tabWidth),
+  });
+
+  return (
+    <View style={homeFx.tabBar}>
+      <Animated.View style={[homeFx.tabSlider, { width: tabWidth - 4, transform: [{ translateX }] }]} />
+      {tabs.map((tab) => (
+        <TouchableOpacity
+          key={tab.key}
+          style={homeFx.tabBtn}
+          activeOpacity={0.82}
+          onPress={() => onSwitch(tab.key)}
+        >
+          <View style={orderTabSt.tabLabelRow}>
+            <Text style={[homeFx.tabText, active === tab.key && homeFx.tabTextActive]} numberOfLines={1}>{tab.label}</Text>
+            {tab.count > 0 ? (
+              <View style={[orderTabSt.tabInlineBadge, { backgroundColor: tab.badgeBg }]}>
+                <Text style={orderTabSt.tabInlineBadgeText}>{tab.count > 99 ? '99+' : tab.count}</Text>
+              </View>
+            ) : null}
+          </View>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+}
+
 function BuyerHomeEmptyState({
   emoji,
   title,
@@ -7342,11 +8674,6 @@ const styles = StyleSheet.create({
 });
 
 const authSt = StyleSheet.create({
-  bootWrap: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 20, backgroundColor: C.cream, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
-  bootBadge: { backgroundColor: C.ink, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, marginBottom: 16 },
-  bootBadgeText: { color: C.turmeric, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
-  bootTitle: { fontSize: 24, fontWeight: '800', color: C.ink, textAlign: 'center' },
-  bootSub: { marginTop: 8, fontSize: 13, lineHeight: 20, color: C.warmGray, textAlign: 'center' },
   scrollContent: { flexGrow: 1, paddingHorizontal: 22, paddingBottom: 48 },
   brand: { alignItems: 'center', marginTop: 56, marginBottom: 28 },
   brandIcon: { width: 72, height: 72, borderRadius: 18, marginBottom: 14 },
@@ -7380,6 +8707,51 @@ const authSt = StyleSheet.create({
   switchText: { textAlign: 'center', fontSize: 13, color: C.warmGray },
 });
 
+const bootSt = StyleSheet.create({
+  wrap: {
+    position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 20,
+    backgroundColor: C.cream, alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 64, paddingHorizontal: 28,
+  },
+  stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  plateArea: { width: 140, height: 140, alignItems: 'center', justifyContent: 'center', marginBottom: 18 },
+  steamWisp: {
+    position: 'absolute', top: 6, width: 4, height: 20, borderRadius: 4,
+    backgroundColor: C.turmeric,
+  },
+  plateGlow: {
+    position: 'absolute', top: 4, left: 4, width: 132, height: 132, borderRadius: 66,
+    backgroundColor: C.spice,
+  },
+  plate: {
+    width: 120, height: 120, borderRadius: 60,
+    backgroundColor: C.white, borderWidth: 3, borderColor: C.ink,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: 'rgba(26,18,9,0.25)', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 1, shadowRadius: 16, elevation: 8,
+  },
+  plateInner: {
+    width: 84, height: 84, borderRadius: 42, backgroundColor: C.blush,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  plateEmoji: { fontSize: 38 },
+  orbitDot: {
+    position: 'absolute', top: '50%', left: '50%', marginLeft: -5, marginTop: -5,
+    width: 10, height: 10, borderRadius: 5, backgroundColor: C.turmeric,
+    shadowColor: C.turmeric, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.9, shadowRadius: 6, elevation: 6,
+  },
+  wordmarkRow: { flexDirection: 'row', marginBottom: 8 },
+  wordmarkLetter: { fontSize: 34, fontWeight: '900', letterSpacing: -0.5 },
+  wordmarkLetterFood: { color: C.ink },
+  wordmarkLetterSood: { color: C.spice },
+  tagline: { fontSize: 14, color: C.warmGray, fontWeight: '500', marginBottom: 22 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.turmeric },
+  statusText: { fontSize: 12.5, color: '#B0791E', letterSpacing: 0.2, fontWeight: '600' },
+  pinRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pinIcon: { fontSize: 13 },
+  pinText: { fontSize: 12.5, color: C.warmGray, fontWeight: '500' },
+});
+
 const orderTabSt = StyleSheet.create({
   summaryRow: { flexDirection: 'row', gap: 10, marginHorizontal: 18, marginTop: 18, marginBottom: 18 },
   summaryTile: {
@@ -7397,11 +8769,10 @@ const orderTabSt = StyleSheet.create({
   },
   summaryValue: { fontSize: 24, fontWeight: '900', color: C.ink, letterSpacing: -0.6 },
   summaryLabel: { fontSize: 11, lineHeight: 15, color: '#44584E', fontWeight: '700' },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 18, marginBottom: 10, marginTop: 8 },
-  sectionEmoji: { fontSize: 16, marginRight: 8 },
-  sectionTitle: { flex: 1, fontSize: 16, fontWeight: '800', color: '#1A2620', letterSpacing: -0.3 },
-  sectionBadge: { minWidth: 28, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999, backgroundColor: '#1D6B54', alignItems: 'center' },
-  sectionBadgeText: { color: C.white, fontSize: 11, fontWeight: '800' },
+  tabBarWrap: { marginHorizontal: 18, marginBottom: 8 },
+  tabLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  tabInlineBadge: { minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  tabInlineBadgeText: { color: C.white, fontSize: 10, fontWeight: '800' },
   emptyCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 24,
@@ -7547,6 +8918,7 @@ const reviewPromptSt = StyleSheet.create({
   star: { fontSize: 32, color: C.border },
   starActive: { color: C.turmeric },
   input: { minHeight: 110, borderRadius: 16, borderWidth: 1, borderColor: C.border, backgroundColor: C.cream, paddingHorizontal: 14, paddingVertical: 14, fontSize: 14, color: C.ink },
+  inputCompact: { minHeight: 88 },
   submitBtn: { marginTop: 18, backgroundColor: C.spice, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   submitBtnText: { color: C.white, fontSize: 14, fontWeight: '800' },
   snoozeBtn: { marginTop: 10, borderRadius: 14, paddingVertical: 13, alignItems: 'center', borderWidth: 1, borderColor: C.border, backgroundColor: C.white },
@@ -7584,6 +8956,7 @@ const notifSheetSt = StyleSheet.create({
   rejectBtnText: { color: '#D94B4B', fontSize: 14, fontWeight: '800' },
   closeBtn: { marginTop: 4, backgroundColor: '#F4824A', borderRadius: 18, paddingVertical: 14, alignItems: 'center' },
   closeBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  actionHint: { flex: 1, fontSize: 12, lineHeight: 18, color: '#8A7F74', paddingVertical: 6 },
 });
 
 const profileSt = StyleSheet.create({
@@ -7657,6 +9030,7 @@ const feedSt = StyleSheet.create({
   cookFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 12 },
   cookFooterLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   cookFooterRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  cookFreshMeta: { fontSize: 12, color: C.mint, fontWeight: '700' },
   cookMetaItem: { fontSize: 12, color: C.warmGray, fontWeight: '500' },
   cookRatingBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.paleGreen, borderRadius: 7, paddingHorizontal: 7, paddingVertical: 3 },
   cookRatingBadgeText: { fontSize: 11, fontWeight: '800', color: C.mint },
@@ -7752,41 +9126,108 @@ const homeFx = StyleSheet.create({
 });
 
 const exploreSt = StyleSheet.create({
-  hero: {
-    marginHorizontal: 18,
-    marginTop: 18,
-    marginBottom: 14,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 26,
-    padding: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E4ECE6',
-    shadowColor: 'rgba(46,139,110,0.08)',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 3,
+  // Search
+  searchBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    marginHorizontal: 18, marginTop: 16, marginBottom: 12,
+    backgroundColor: '#FFFFFF', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 13,
+    borderWidth: 1, borderColor: '#E4ECE6',
+    shadowColor: 'rgba(46,139,110,0.08)', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 2,
   },
-  heroTextWrap: { flex: 1, paddingRight: 12 },
-  heroKicker: { fontSize: 10, fontWeight: '800', color: '#2E8B6E', letterSpacing: 1 },
-  heroTitle: { marginTop: 8, fontSize: 20, lineHeight: 25, fontWeight: '800', color: '#1A2620', letterSpacing: -0.5 },
-  heroSub: { marginTop: 8, fontSize: 12, lineHeight: 18, color: '#6E7F75', fontWeight: '600' },
-  heroBadge: { width: 64, height: 64, borderRadius: 22, backgroundColor: '#DFF3EA', alignItems: 'center', justifyContent: 'center' },
-  heroBadgeEmoji: { fontSize: 30 },
-  statsRow: { flexDirection: 'row', gap: 10, marginHorizontal: 18, marginBottom: 16 },
-  statCard: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: '#E4ECE6',
+  searchIcon: { fontSize: 15 },
+  searchInput: { flex: 1, fontSize: 14, color: C.ink, padding: 0 },
+  searchClear: { fontSize: 13, color: C.warmGray, fontWeight: '700', paddingHorizontal: 2 },
+
+  // Promo carousel
+  promoScroll: { paddingHorizontal: 18, gap: 12, paddingBottom: 4 },
+  promoCard: {
+    width: SCREEN_W - 66, minHeight: 110, borderRadius: 24, padding: 18,
+    flexDirection: 'row', alignItems: 'center', overflow: 'hidden',
   },
-  statValue: { fontSize: 22, fontWeight: '900', color: '#1A2620', letterSpacing: -0.5 },
-  statLabel: { marginTop: 4, fontSize: 12, fontWeight: '700', color: '#6E7F75' },
+  promoBlob: {
+    position: 'absolute', width: 120, height: 120, borderRadius: 60,
+    backgroundColor: 'rgba(255,255,255,0.35)', top: -50, right: -30,
+  },
+  // Explicit width (not flex:1) — Yoga can mis-measure wrapped Text inside a
+  // flex:1 View nested in a horizontal ScrollView, collapsing it to a sliver.
+  promoTextWrap: { width: SCREEN_W - 66 - 36 - 50 },
+  promoKicker: { fontSize: 10, fontWeight: '800', color: '#2E8B6E', letterSpacing: 1 },
+  promoTitle: { marginTop: 6, fontSize: 16, lineHeight: 21, fontWeight: '800', color: '#1A2620', letterSpacing: -0.3 },
+  promoSub: { marginTop: 6, fontSize: 11.5, lineHeight: 16, color: '#4E5B54', fontWeight: '600' },
+  promoEmoji: { fontSize: 34, marginLeft: 10 },
+
+  // Category chips
+  chipScroll: { paddingHorizontal: 18, gap: 8, paddingBottom: 4, marginBottom: 4 },
+  catChip: {
+    paddingHorizontal: 16, paddingVertical: 9, borderRadius: 999,
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E4ECE6',
+  },
+  catChipActive: { backgroundColor: C.ink, borderColor: C.ink },
+  catChipText: { fontSize: 12.5, fontWeight: '700', color: '#4E5B54' },
+  catChipTextActive: { color: '#FFFFFF' },
+
+  // Sections
+  section: { marginTop: 22 },
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: 18, marginBottom: 12 },
+  sectionHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  sectionHeaderIcon: { fontSize: 16 },
+  sectionHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#1A2620', letterSpacing: -0.3 },
+  sectionHeaderBadge: { backgroundColor: C.paleGreen, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3 },
+  sectionHeaderBadgeText: { fontSize: 11, fontWeight: '800', color: C.mint },
+
+  // Horizontal dish/chef rails
+  railScroll: { paddingHorizontal: 18, gap: 12, paddingBottom: 4 },
+  railCard: {
+    width: 168, borderRadius: 18, backgroundColor: '#FFFFFF',
+    borderWidth: 1, borderColor: C.border, overflow: 'hidden',
+    shadowColor: C.ink, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
+  },
+  railImgBox: { width: '100%', height: 108, position: 'relative' },
+  railImg: { width: '100%', height: '100%' },
+  railImgFallback: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
+  railImgEmoji: { fontSize: 40 },
+  railEtaBadge: {
+    position: 'absolute', left: 8, bottom: 8, backgroundColor: C.turmeric,
+    borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3,
+  },
+  railEtaBadgeReady: { backgroundColor: C.mint },
+  railEtaText: { fontSize: 10, fontWeight: '800', color: '#FFFFFF' },
+  railRatingBadge: {
+    position: 'absolute', right: 8, top: 8, backgroundColor: 'rgba(255,255,255,0.92)',
+    borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3,
+  },
+  railRatingText: { fontSize: 10, fontWeight: '800', color: C.ink },
+  railBody: { padding: 11, gap: 5 },
+  railDish: { fontSize: 13.5, fontWeight: '800', color: C.ink, letterSpacing: -0.2 },
+  railChefRow: { flexDirection: 'row', alignItems: 'center' },
+  railChefName: { fontSize: 11, color: C.warmGray, fontWeight: '600', flexShrink: 1 },
+  railDist: { fontSize: 11, color: C.mint, fontWeight: '700', marginLeft: 3 },
+  railQty: { fontSize: 10.5, color: C.warmGray, fontWeight: '600', marginTop: 2 },
+  railFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 },
+  railPrice: { fontSize: 13.5, fontWeight: '800', color: C.ink },
+  railCta: { backgroundColor: C.mint, borderRadius: 10, paddingHorizontal: 11, paddingVertical: 7 },
+  railCtaPreOrder: { backgroundColor: '#7C3AED' },
+  railCtaText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  railCtaSent: { backgroundColor: C.paleGreen, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
+  railCtaSentText: { color: C.mint, fontSize: 11, fontWeight: '800' },
+
+  chefRailCard: {
+    width: 132, borderRadius: 18, backgroundColor: '#FFFFFF', alignItems: 'center',
+    borderWidth: 1, borderColor: C.border, paddingVertical: 16, paddingHorizontal: 10,
+    shadowColor: C.ink, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
+  },
+  chefRailAvatar: {
+    width: 52, height: 52, borderRadius: 26, backgroundColor: C.paleGreen,
+    alignItems: 'center', justifyContent: 'center', marginBottom: 8,
+    borderWidth: 1.5, borderColor: '#C3E6D3',
+  },
+  chefRailAvatarText: { fontSize: 20, fontWeight: '800', color: C.mint },
+  chefRailName: { fontSize: 13, fontWeight: '800', color: C.ink, textAlign: 'center' },
+  chefRailRatingPill: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
+  chefRailRatingText: { fontSize: 11, fontWeight: '800', color: C.turmeric },
+  chefRailDot: { fontSize: 11, color: C.warmGray },
+  chefRailDishCount: { fontSize: 11, fontWeight: '700', color: C.warmGray },
+  chefRailCuisine: { fontSize: 10.5, color: C.warmGray, fontWeight: '600', marginTop: 4, textAlign: 'center' },
 });
 
 const locSt = StyleSheet.create({
@@ -7857,6 +9298,15 @@ const locSt = StyleSheet.create({
   listItemName: { fontSize: 14, fontWeight: '600', color: C.ink },
   listItemNameActive: { color: C.mint },
   listItemSub: { fontSize: 11, color: C.warmGray, marginTop: 1 },
+  savedAddressesBlock: { marginTop: 6, gap: 8 },
+  savedAddressesTitle: { fontSize: 12, fontWeight: '800', color: C.ink, textTransform: 'uppercase', letterSpacing: 0.4 },
+  savedAddressesHint: { fontSize: 12, color: C.warmGray, lineHeight: 18 },
+  savedAddressCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, backgroundColor: C.white, borderWidth: 1, borderColor: C.border, borderRadius: 14, padding: 12 },
+  savedAddressIconWrap: { width: 36, height: 36, borderRadius: 12, backgroundColor: C.paleYellow, alignItems: 'center', justifyContent: 'center' },
+  savedAddressIcon: { fontSize: 17, color: C.ink },
+  savedAddressCopy: { flex: 1 },
+  savedAddressLabel: { fontSize: 13, fontWeight: '800', color: C.ink, marginBottom: 4 },
+  savedAddressText: { fontSize: 12, lineHeight: 18, color: C.warmGray },
   saveBtn: { backgroundColor: C.spice, borderRadius: 14, alignItems: 'center', paddingVertical: 15, marginTop: 14, marginBottom: 8, shadowColor: C.spice, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.22, shadowRadius: 12, elevation: 4 },
   saveBtnText: { color: C.white, fontSize: 14, fontWeight: '800' },
 });
@@ -8024,6 +9474,7 @@ const negSt = StyleSheet.create({
   inputSheet: { backgroundColor: '#FDFAF5', borderRadius: 24, padding: 24, width: '100%' },
   inputTitle: { fontSize: 20, fontWeight: '900', color: '#1A1209', marginBottom: 4 },
   inputSub: { fontSize: 13, color: '#8A7F74', marginBottom: 18 },
+  limitNote: { fontSize: 12, lineHeight: 18, color: '#8A7F74', backgroundColor: '#FFF7E8', borderRadius: 12, padding: 10, marginBottom: 12 },
   input: {
     backgroundColor: '#F2F5F0', borderRadius: 12, borderWidth: 1, borderColor: '#EDE8E0',
     paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: '#1A1209', marginBottom: 6,
