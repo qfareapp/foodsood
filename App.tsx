@@ -765,6 +765,10 @@ type NotificationsModule = {
   AndroidImportance: { MAX: number };
   getPermissionsAsync: () => Promise<unknown>;
   requestPermissionsAsync: () => Promise<unknown>;
+  getDevicePushTokenAsync: () => Promise<{ data?: string | unknown }>;
+  getLastNotificationResponseAsync?: () => Promise<{
+    notification: { request: { content: { data?: Record<string, unknown> } } };
+  } | null>;
   setNotificationChannelAsync: (channelId: string, input: { name: string; importance: number }) => Promise<unknown>;
   addNotificationReceivedListener: (listener: () => void) => { remove: () => void };
   addNotificationResponseReceivedListener: (listener: (response: {
@@ -1679,6 +1683,10 @@ export default function App() {
   const notificationReceivedSubRef = useRef<{ remove: () => void } | null>(null);
   const notificationResponseSubRef = useRef<{ remove: () => void } | null>(null);
   const buyerNotificationsReadyRef = useRef(false);
+  const buyerPushTokenRef = useRef<string | null>(null);
+  const buyerPushRegisteredUserIdRef = useRef<string | null>(null);
+  const pendingNotificationKeyRef = useRef<string | null>(null);
+  const pendingNotificationTargetRef = useRef<{ entityType: 'OFFER' | 'REQUEST'; entityId: string } | null>(null);
   const [cookingFeed, setCookingFeed] = useState<CookingFeedCard[]>([]);
   const [cookingLoading, setCookingLoading] = useState(false);
   const [exploreSearch, setExploreSearch] = useState('');
@@ -2587,9 +2595,83 @@ export default function App() {
     }
   };
 
+  const registerBuyerPushToken = async (profile: BuyerProfile) => {
+    const notifications = getNotificationsModule();
+    if (!notifications || Platform.OS === 'web') return;
+    if (buyerPushRegisteredUserIdRef.current === profile.id && buyerPushTokenRef.current) return;
+    const ready = await ensureBuyerNotificationsReady();
+    if (!ready) return;
+    try {
+      const devicePushToken = await notifications.getDevicePushTokenAsync();
+      const token = typeof devicePushToken.data === 'string' ? devicePushToken.data : null;
+      if (!token) return;
+      await buyerApi<{ success: true }>('/users/me/fcm-token', {
+        method: 'POST',
+        body: JSON.stringify({ token }),
+      });
+      buyerPushTokenRef.current = token;
+      buyerPushRegisteredUserIdRef.current = profile.id;
+    } catch {
+      // ignore push registration failures
+    }
+  };
+
+  const unregisterBuyerPushToken = async () => {
+    const token = buyerPushTokenRef.current;
+    buyerPushTokenRef.current = null;
+    buyerPushRegisteredUserIdRef.current = null;
+    if (!token) return;
+    try {
+      await buyerApi<{ success: true }>('/users/me/fcm-token', {
+        method: 'DELETE',
+        body: JSON.stringify({ token }),
+      });
+    } catch {
+      // ignore token cleanup failures
+    }
+  };
+
+  const handleBuyerNotificationResponse = async (response: {
+    notification: { request: { content: { data?: Record<string, unknown> } } };
+  }) => {
+    await refreshBuyerData();
+    setFeedTab('requests');
+    setScreen('home');
+    const notificationKey = response.notification.request.content.data?.notificationKey;
+    const entityType = response.notification.request.content.data?.entityType;
+    const entityId = response.notification.request.content.data?.entityId;
+    if (typeof notificationKey === 'string') {
+      const matched = notificationCardsRef.current.find((item) => getNotificationVersionKey(item) === notificationKey);
+      if (matched) {
+        await openNotificationCard(matched);
+      } else {
+        pendingNotificationKeyRef.current = notificationKey;
+      }
+      return;
+    }
+    if (entityType === 'OFFER' && typeof entityId === 'string') {
+      const matched = notificationCardsRef.current.find((item) => item.rawOffer?.id === entityId);
+      if (matched) {
+        await openNotificationCard(matched);
+      } else {
+        pendingNotificationTargetRef.current = { entityType: 'OFFER', entityId };
+      }
+      return;
+    }
+    if (entityType === 'REQUEST' && typeof entityId === 'string') {
+      const matched = notificationCardsRef.current.find((item) => item.rawRequest?.id === entityId);
+      if (matched) {
+        await openNotificationCard(matched);
+      } else {
+        pendingNotificationTargetRef.current = { entityType: 'REQUEST', entityId };
+      }
+    }
+  };
+
   useEffect(() => {
     if (!buyerProfile) return;
     void ensureBuyerNotificationsReady();
+    void registerBuyerPushToken(buyerProfile);
   }, [buyerProfile]);
 
   useEffect(() => {
@@ -2602,14 +2684,11 @@ export default function App() {
       void refreshBuyerData();
     });
     notificationResponseSubRef.current = notifications.addNotificationResponseReceivedListener((response) => {
-      void refreshBuyerData();
-      setFeedTab('requests');
-      setScreen('home');
-      const notificationKey = response.notification.request.content.data?.notificationKey;
-      if (typeof notificationKey !== 'string') return;
-      const matched = notificationCardsRef.current.find((item) => getNotificationVersionKey(item) === notificationKey);
-      if (matched) {
-        void openNotificationCard(matched);
+      void handleBuyerNotificationResponse(response);
+    });
+    void notifications.getLastNotificationResponseAsync?.().then((response) => {
+      if (response) {
+        void handleBuyerNotificationResponse(response);
       }
     });
 
@@ -2623,6 +2702,7 @@ export default function App() {
 
   useEffect(() => {
     const notifications = getNotificationsModule();
+    if (Platform.OS !== 'web' && !isRunningInExpoGo()) return;
     if (!buyerProfile?.id || !announcedNotificationsReady || announceNotificationBaselinePending || !notifications) return;
     const nextAnnouncements = notificationCards.filter((item) => (
       shouldAnnounceBuyerNotification(item) && !announcedNotificationKeys.includes(getNotificationVersionKey(item))
@@ -2655,6 +2735,26 @@ export default function App() {
       cancelled = true;
     };
   }, [announceNotificationBaselinePending, announcedNotificationKeys, announcedNotificationsReady, buyerProfile?.id, notificationCards]);
+
+  useEffect(() => {
+    const pendingKey = pendingNotificationKeyRef.current;
+    if (pendingKey) {
+      const matched = notificationCards.find((item) => getNotificationVersionKey(item) === pendingKey);
+      if (matched) {
+        pendingNotificationKeyRef.current = null;
+        void openNotificationCard(matched);
+        return;
+      }
+    }
+    const pendingTarget = pendingNotificationTargetRef.current;
+    if (!pendingTarget) return;
+    const matched = pendingTarget.entityType === 'OFFER'
+      ? notificationCards.find((item) => item.rawOffer?.id === pendingTarget.entityId)
+      : notificationCards.find((item) => item.rawRequest?.id === pendingTarget.entityId);
+    if (!matched) return;
+    pendingNotificationTargetRef.current = null;
+    void openNotificationCard(matched);
+  }, [notificationCards]);
 
   function markNotificationSeen(item: BuyerNotificationCard) {
     const key = getNotificationVersionKey(item);
@@ -2878,6 +2978,7 @@ export default function App() {
   };
 
   const handleBuyerLogout = async () => {
+    await unregisterBuyerPushToken();
     const refreshToken = await BuyerTokens.getRefresh();
     if (refreshToken) {
       try {
@@ -3506,9 +3607,13 @@ export default function App() {
     if (!offer || offer <= 0) return;
     setHomeBargainSending(true);
     try {
+      const accessToken = await BuyerTokens.getAccess();
       await fetch(`${API_BASE}/offers`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({
           dishId: homeBargainItem.dishId,
           chefId: homeBargainItem.chefId,
@@ -4176,9 +4281,13 @@ export default function App() {
               setHomeBargainSending(true);
 
               try {
+                const accessToken = await BuyerTokens.getAccess();
                 await fetch(`${API_BASE}/offers`, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+                  },
                   body: JSON.stringify({
                     dishId: homeBargainItem.dishId,
                     chefId: homeBargainItem.chefId,

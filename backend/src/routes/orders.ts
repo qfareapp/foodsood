@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { createCashfreeOrder, generateCashfreeOrderId, getCashfreeErrorMessage, isCashfreeReady } from '../lib/cashfree';
+import { notifyUsersByIds } from '../lib/fcm';
 import prisma from '../lib/prisma';
 import { assertNotBlocked } from '../lib/moderation';
 import { AuthRequest, requireAuth } from '../middleware/auth';
@@ -69,6 +70,75 @@ function getBuyerCashfreeCustomer(input: {
     customerEmail: safeEmail,
     customerPhone: normalizedPhone || '9999999999',
   };
+}
+
+function getOrderBuyerNotification(order: {
+  id: string;
+  requestId: string;
+  buyerId: string;
+  dishName: string;
+  status: string;
+  paymentStatus: string;
+  delivery: string;
+}) {
+  if (order.paymentStatus === 'HOLD') {
+    return {
+      title: `${order.dishName} is awaiting payment`,
+      body: 'A chef accepted your request. Complete payment to confirm the order.',
+    };
+  }
+  if (order.status === 'COOKING') {
+    return {
+      title: `${order.dishName} is being cooked`,
+      body: 'Your order is now in the kitchen.',
+    };
+  }
+  if (order.status === 'READY') {
+    return {
+      title: `${order.dishName} is ready`,
+      body: order.delivery === 'pickup' ? 'Your order is ready for pickup.' : 'Your chef marked the order ready for delivery.',
+    };
+  }
+  if (order.status === 'OUT_FOR_DELIVERY') {
+    return {
+      title: `${order.dishName} is on the way`,
+      body: 'Your request order is out for delivery.',
+    };
+  }
+  if (order.status === 'DELIVERED') {
+    return {
+      title: `${order.dishName} was delivered`,
+      body: 'Your request order has been completed.',
+    };
+  }
+  if (order.status === 'CANCELLED') {
+    return {
+      title: `${order.dishName} was cancelled`,
+      body: 'This request order was cancelled.',
+    };
+  }
+  return {
+    title: `${order.dishName} order confirmed`,
+    body: 'Payment was received and your request order is confirmed.',
+  };
+}
+
+function notifyOrderBuyer(order: {
+  id: string;
+  requestId: string;
+  buyerId: string;
+  dishName: string;
+  status: string;
+  paymentStatus: string;
+  delivery: string;
+}) {
+  const notification = getOrderBuyerNotification(order);
+  notifyUsersByIds(
+    [order.buyerId],
+    notification.title,
+    notification.body,
+    { type: 'BUYER_ACTIVITY', entityType: 'REQUEST', entityId: order.requestId },
+  ).catch(() => {});
 }
 
 type SpecialityDishReview = {
@@ -319,6 +389,16 @@ router.put('/:id/status', requireAuth, async (req: AuthRequest, res) => {
     return;
   }
 
+  notifyOrderBuyer({
+    id: updated.id,
+    requestId: updated.requestId,
+    buyerId: updated.buyerId,
+    dishName: updated.request.dishName,
+    status: updated.status,
+    paymentStatus: updated.paymentStatus,
+    delivery: updated.request.delivery,
+  });
+
   res.json({
     ...updated,
     request: {
@@ -407,6 +487,16 @@ router.post('/:id/pay', requireAuth, async (req: AuthRequest, res) => {
     res.status(404).json({ error: 'Order not found after payment' });
     return;
   }
+
+  notifyOrderBuyer({
+    id: updated.id,
+    requestId: updated.requestId,
+    buyerId: updated.buyerId,
+    dishName: updated.request.dishName,
+    status: updated.status,
+    paymentStatus: updated.paymentStatus,
+    delivery: updated.request.delivery,
+  });
 
   res.json({
     ...updated,
@@ -552,6 +642,16 @@ router.post('/:id/pay-balance', requireAuth, async (req: AuthRequest, res) => {
     res.status(404).json({ error: 'Order not found after balance payment' });
     return;
   }
+
+  notifyOrderBuyer({
+    id: updated.id,
+    requestId: updated.requestId,
+    buyerId: updated.buyerId,
+    dishName: updated.request.dishName,
+    status: updated.status,
+    paymentStatus: updated.paymentStatus,
+    delivery: updated.request.delivery,
+  });
 
   res.json({
     ...updated,

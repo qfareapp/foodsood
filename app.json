@@ -26,6 +26,12 @@
     },
     "android": {
       "package": "com.mepranjal.foodsood",
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E85D26",
         "foregroundImage": "./assets/buyer-adaptive-foreground.png",

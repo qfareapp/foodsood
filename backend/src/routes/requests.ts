@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { notifyChefs } from '../lib/fcm';
+import { notifyChefs, notifyUsersByIds } from '../lib/fcm';
 import { haversineKm } from '../lib/geo';
 import prisma from '../lib/prisma';
 import { expireStaleRequests } from '../lib/requestExpiry';
@@ -407,7 +407,7 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
 
   const request = await prisma.request.findUnique({
     where: { id: requestId },
-    select: { id: true, status: true, userId: true, targetChefId: true },
+    select: { id: true, dishName: true, status: true, userId: true, targetChefId: true },
   });
   if (!request) {
     res.status(404).json({ error: 'Request not found' });
@@ -460,6 +460,13 @@ router.post('/:id/quotes', requireAuth, async (req: AuthRequest, res) => {
   if (request.status === 'OPEN') {
     await prisma.request.update({ where: { id: requestId }, data: { status: 'NEGOTIATING' } });
   }
+
+  notifyUsersByIds(
+    [request.userId],
+    `New offer for ${request.dishName}`,
+    `${quote.chef.name} sent a quote for ₹${quote.price}.`,
+    { type: 'BUYER_ACTIVITY', entityType: 'REQUEST', entityId: requestId },
+  ).catch(() => {});
 
   res.status(201).json(quote);
 });

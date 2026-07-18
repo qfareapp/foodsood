@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { createCashfreeOrder, generateCashfreeOrderId, getCashfreeErrorMessage, isCashfreeReady } from '../lib/cashfree';
+import { notifyUsersByIds } from '../lib/fcm';
 import prisma from '../lib/prisma';
-import { AuthRequest, requireAuth } from '../middleware/auth';
+import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth';
 
 const router = Router();
 const HOLD_MINUTES = 20;
@@ -105,6 +106,83 @@ function getOfferCustomer(input: {
   };
 }
 
+function getOfferBuyerNotification(offer: {
+  id: string;
+  dishName: string;
+  status: string;
+  orderStatus?: string | null;
+  counterPrice?: number | null;
+  offerPrice: number;
+  deliveryMode?: string | null;
+}) {
+  if (offer.status === 'COUNTERED') {
+    return {
+      title: `Chef countered on ${offer.dishName}`,
+      body: `New counter offer for ₹${offer.counterPrice ?? offer.offerPrice} per plate. Review and respond.`,
+    };
+  }
+  if (offer.status === 'HOLD') {
+    return {
+      title: `${offer.dishName} is awaiting payment`,
+      body: 'Chef accepted your offer. Complete payment before the hold expires.',
+    };
+  }
+  if (offer.status === 'REJECTED') {
+    return {
+      title: `${offer.dishName} offer declined`,
+      body: 'This chef declined your offer.',
+    };
+  }
+  if (offer.orderStatus === 'COOKING') {
+    return {
+      title: `${offer.dishName} is being cooked`,
+      body: 'Your today-board order is now in the kitchen.',
+    };
+  }
+  if (offer.orderStatus === 'READY') {
+    return {
+      title: `${offer.dishName} is ready`,
+      body: offer.deliveryMode === 'delivery' ? 'Your chef marked the order ready for delivery.' : 'Your order is ready for pickup.',
+    };
+  }
+  if (offer.orderStatus === 'OUT_FOR_DELIVERY') {
+    return {
+      title: `${offer.dishName} is on the way`,
+      body: 'Your today-board order is out for delivery.',
+    };
+  }
+  if (offer.orderStatus === 'DELIVERED') {
+    return {
+      title: `${offer.dishName} was delivered`,
+      body: 'Your today-board order has been completed.',
+    };
+  }
+  return {
+    title: `${offer.dishName} order updated`,
+    body: 'There is an update on your direct order.',
+  };
+}
+
+function notifyOfferBuyer(offer: {
+  buyerId?: string | null;
+  id: string;
+  dishName: string;
+  status: string;
+  orderStatus?: string | null;
+  counterPrice?: number | null;
+  offerPrice: number;
+  deliveryMode?: string | null;
+}) {
+  if (!offer.buyerId) return;
+  const notification = getOfferBuyerNotification(offer);
+  notifyUsersByIds(
+    [offer.buyerId],
+    notification.title,
+    notification.body,
+    { type: 'BUYER_ACTIVITY', entityType: 'OFFER', entityId: offer.id },
+  ).catch(() => {});
+}
+
 type SpecialityDishReview = {
   buyerName: string;
   rating: number;
@@ -171,7 +249,7 @@ async function appendDishReviewToChefSpeciality(offer: {
   });
 }
 
-router.post('/', async (req, res) => {
+router.post('/', optionalAuth, async (req: AuthRequest, res) => {
   await expireHeldOffers();
 
   const parsed = createOfferSchema.safeParse(req.body);
@@ -280,6 +358,7 @@ router.patch('/:id/buyer-accept', async (req, res) => {
       lastOfferBy: 'CHEF',
     },
   });
+  notifyOfferBuyer(updated);
   res.json(updated);
 });
 
@@ -299,6 +378,7 @@ router.patch('/:id/buyer-reject', async (req, res) => {
     where: { id: offerId },
     data: { status: 'REJECTED' },
   });
+  notifyOfferBuyer(updated);
   res.json(updated);
 });
 
@@ -337,6 +417,7 @@ router.post('/:id/pay', async (req, res) => {
       orderStatus: 'CONFIRMED',
     },
   });
+  notifyOfferBuyer(updated);
 
   await prisma.user.update({
     where: { id: offer.chefId },
@@ -551,6 +632,7 @@ router.patch('/:id/order-status', requireAuth, async (req: AuthRequest, res) => 
     where: { id: offerId },
     data: { orderStatus: parsed.data.status },
   });
+  notifyOfferBuyer(updated);
 
   res.json(updated);
 });
@@ -653,6 +735,7 @@ router.patch('/:id/accept', requireAuth, async (req: AuthRequest, res) => {
       lastOfferBy: 'BUYER',
     },
   });
+  notifyOfferBuyer(updated);
   res.json(updated);
 });
 
@@ -668,6 +751,7 @@ router.patch('/:id/reject', requireAuth, async (req: AuthRequest, res) => {
     where: { id: offer.id },
     data: { status: 'REJECTED' },
   });
+  notifyOfferBuyer(updated);
   res.json(updated);
 });
 
@@ -697,6 +781,7 @@ router.patch('/:id/counter', requireAuth, async (req: AuthRequest, res) => {
       chefCounterCount: { increment: 1 },
     },
   });
+  notifyOfferBuyer(updated);
   res.json(updated);
 });
 

@@ -9,6 +9,7 @@
  */
 
 import admin from 'firebase-admin';
+import prisma from './prisma';
 
 let initialized = false;
 
@@ -25,11 +26,7 @@ function initFirebase() {
   }
 }
 
-/**
- * Send a push notification to a list of FCM device tokens.
- * Fires-and-forgets — never throws.
- */
-export async function notifyChefs(
+async function sendNotifications(
   tokens: string[],
   title: string,
   body: string,
@@ -59,4 +56,34 @@ export async function notifyChefs(
   } catch (err) {
     console.error('[FCM] Send error:', err);
   }
+}
+
+/**
+ * Send a push notification to a list of FCM device tokens.
+ * Fires-and-forgets — never throws.
+ */
+export async function notifyChefs(
+  tokens: string[],
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+): Promise<void> {
+  await sendNotifications(tokens, title, body, data);
+}
+
+export async function notifyUsersByIds(
+  userIds: string[],
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+): Promise<void> {
+  const dedupedUserIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (dedupedUserIds.length === 0) return;
+
+  const tokenRows = await prisma.fcmToken.findMany({
+    where: { userId: { in: dedupedUserIds } },
+    select: { token: true },
+  });
+  const tokens = Array.from(new Set(tokenRows.map((row) => row.token).filter(Boolean)));
+  await sendNotifications(tokens, title, body, data);
 }

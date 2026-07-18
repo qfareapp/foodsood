@@ -121,7 +121,7 @@
         </p>
         <div class="grid">
           <div class="pill"><strong>Applies to:</strong><br />FoodSood buyer app and NeighbourBites Chef app</div>
-          <div class="pill"><strong>Effective date:</strong><br />May 6, 2026</div>
+          <div class="pill"><strong>Effective date:</strong><br />July 18, 2026</div>
           <div class="pill"><strong>Support contact:</strong><br />support@foodsood.com</div>
         </div>
       </section>
@@ -131,10 +131,10 @@
         <p>Depending on whether you use the buyer app or chef app, we may collect the following categories of data:</p>
         <ul>
           <li>Account information such as name, phone number, email address, user role, and login credentials.</li>
-          <li>Profile information such as bio, avatar, cover image, kitchen images, dish details, ratings, and reviews.</li>
-          <li>Location information such as city, address text, and foreground GPS coordinates when you choose to provide them.</li>
+          <li>Profile information such as bio, avatar, cover image, kitchen images, building or storefront images, dish details, ratings, and reviews.</li>
+          <li>Location information such as city, address text, landmark notes, geo-radius preferences, and foreground GPS coordinates when you choose to provide them.</li>
           <li>Order and marketplace information such as requests, quotes, dishes, offers, delivery mode, order status, and payment references.</li>
-          <li>Device and app information such as secure login tokens and push notification tokens.</li>
+          <li>Device and app information such as secure login tokens, refresh tokens, buyer device identifiers used for app-side order tracking, and push notification tokens.</li>
           <li>User-generated content such as profile text, uploaded images, reviews, and moderation reports.</li>
         </ul>
 
@@ -144,7 +144,7 @@
           <li>To show nearby chefs, delivery areas, and order-relevant locations.</li>
           <li>To enable food requests, quotes, offers, direct dish sales, and order fulfillment.</li>
           <li>To show reviews, ratings, profile content, and live dish listings.</li>
-          <li>To send important push notifications, such as quote updates and order progress.</li>
+          <li>To send important push notifications in both the buyer app and the chef app, such as quote updates, counter-offers, payment reminders, food-ready alerts, and order progress.</li>
           <li>To enforce safety controls, including user blocking, reporting, moderation, and abuse review.</li>
           <li>To improve reliability, fraud prevention, and operational support.</li>
         </ul>
@@ -152,9 +152,9 @@
         <h2>3. Permissions Used In The Apps</h2>
         <ul>
           <li><strong>Location:</strong> used to help set service areas, buyer addresses, and nearby chef discovery.</li>
-          <li><strong>Photos / media library:</strong> used when a user chooses to upload profile, kitchen, or food images.</li>
+          <li><strong>Photos / media library:</strong> used when a user chooses to upload profile, kitchen, food, or buyer address / building images.</li>
           <li><strong>Camera:</strong> used in the chef app when a chef chooses to take profile or kitchen photos.</li>
-          <li><strong>Notifications:</strong> used in the chef app for order and marketplace alerts.</li>
+          <li><strong>Notifications:</strong> used in both apps for order, quote, counter-offer, payment, and marketplace alerts.</li>
         </ul>
 
         <div class="note">
@@ -167,7 +167,7 @@
         <ul>
           <li>Buyer and chef profile information may be shown to other users when needed for order discovery and fulfillment.</li>
           <li>Reviews, ratings, and chef profile content may be visible to other users inside the app.</li>
-          <li>We may use service providers for infrastructure, image hosting, notifications, and transactional support.</li>
+          <li>We may use service providers for infrastructure, image hosting, notifications, and transactional support, including payment processing and push delivery.</li>
           <li>We do not sell personal data.</li>
           <li>We may disclose data where required for legal compliance, fraud prevention, or platform security.</li>
         </ul>
@@ -200,10 +200,17 @@
           We use reasonable technical and organizational safeguards to protect personal data, including authenticated access, token-based sessions,
           and restricted admin access. No system can guarantee absolute security, so users should also protect their own credentials and devices.
         </p>
+
+        <h2>9. Third-Party Services</h2>
+        <p>
+          Depending on the app feature you use, we may rely on third-party service providers such as payment processors, cloud messaging / push
+          notification providers, map or geocoding providers, and media or infrastructure hosts. These providers only receive the data reasonably
+          required to perform their operational role for FoodSood.
+        </p>
       </section>
 
       <section class="card section">
-        <h2>9. Google Play Data Safety Summary</h2>
+        <h2>10. Google Play Data Safety Summary</h2>
         <p class="muted">This section is a public-facing summary to help keep the Play Console Data safety form aligned with app behavior.</p>
         <table class="table">
           <thead>
@@ -222,12 +229,12 @@
             <tr>
               <td>Approximate / precise location provided in-app</td>
               <td>Yes</td>
-              <td>Address setup, chef discovery, service-area matching</td>
+              <td>Address setup, saved-address selection, chef discovery, service-area matching</td>
             </tr>
             <tr>
               <td>Photos, camera images, profile uploads</td>
               <td>Yes</td>
-              <td>Profile setup, kitchen/gallery images, dish presentation</td>
+              <td>Profile setup, kitchen/gallery images, dish presentation, buyer building / address reference images</td>
             </tr>
             <tr>
               <td>Reviews, profile text, uploaded content</td>
@@ -237,12 +244,12 @@
             <tr>
               <td>Push notification token</td>
               <td>Yes</td>
-              <td>Operational notifications</td>
+              <td>Operational notifications in both buyer and chef apps</td>
             </tr>
             <tr>
               <td>Payment references and order records</td>
               <td>Yes</td>
-              <td>Order tracking, dispute handling, marketplace operations</td>
+              <td>Order tracking, dispute handling, marketplace operations, payment confirmation</td>
             </tr>
           </tbody>
         </table>
@@ -254,7 +261,7 @@
       </section>
 
       <section class="card section">
-        <h2>10. Contact</h2>
+        <h2>11. Contact</h2>
         <p>
           For privacy, deletion, moderation, or support issues, contact
           <a href="mailto:support@foodsood.com">support@foodsood.com</a>.

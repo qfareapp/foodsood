@@ -45,6 +45,7 @@ model User {
   addresses       Address[]
   savedChefs      SavedChef[]    @relation("SavedBy")
   savedByUsers    SavedChef[]    @relation("SavedChef")
+  directOffers    DishOffer[]    @relation("BuyerDishOffers")
   fcmTokens       FcmToken[]
   refreshTokens   RefreshToken[]
   marketPrices    MarketPriceEntry[]
@@ -228,6 +229,8 @@ model DishOffer {
   id           String   @id @default(cuid()) @map("_id")
   dishId       String
   chefId       String
+  buyerId      String?
+  buyer        User?    @relation("BuyerDishOffers", fields: [buyerId], references: [id])
   buyerName    String
   buyerToken   String   // device UUID for identifying buyer without auth
   plates       Int

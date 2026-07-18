@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
+import { notifyUsersByIds } from '../lib/fcm';
 import prisma from '../lib/prisma';
 import { expireStaleRequests } from '../lib/requestExpiry';
 import { AuthRequest, requireAuth } from '../middleware/auth';
@@ -30,6 +31,19 @@ function holdExpiry() {
 
 function buyerPhoneFromToken(token: string): string {
   return `b${createHash('sha256').update(token).digest('hex').slice(0, 14)}`;
+}
+
+function notifyRequestBuyer(
+  input: { buyerId: string; requestId: string },
+  title: string,
+  body: string,
+) {
+  notifyUsersByIds(
+    [input.buyerId],
+    title,
+    body,
+    { type: 'BUYER_ACTIVITY', entityType: 'REQUEST', entityId: input.requestId },
+  ).catch(() => {});
 }
 
 async function verifyBuyerTokenForQuote(quoteId: string, buyerToken: string) {
@@ -262,6 +276,12 @@ router.post('/:id/accept', requireAuth, async (req: AuthRequest, res) => {
     },
   });
 
+  notifyRequestBuyer(
+    { buyerId: quote.request.userId, requestId: quote.requestId },
+    `${order.request.dishName} is awaiting payment`,
+    'A chef accepted your request. Complete payment to confirm the order.',
+  );
+
   res.status(201).json(order);
 });
 
@@ -318,6 +338,12 @@ router.post('/:id/public-accept', async (req, res) => {
       chef: { select: { id: true, name: true, avatar: true, rating: true, phone: true } },
     },
   });
+
+  notifyRequestBuyer(
+    { buyerId: quote.request.userId, requestId: quote.requestId },
+    `${order.request.dishName} is awaiting payment`,
+    'A chef accepted your request. Complete payment to confirm the order.',
+  );
 
   res.status(201).json(order);
 });
@@ -425,6 +451,12 @@ router.post('/:id/chef-accept-counter', requireAuth, async (req: AuthRequest, re
     },
   });
 
+  notifyRequestBuyer(
+    { buyerId: quote.request.userId, requestId: quote.requestId },
+    `${order.request.dishName} is awaiting payment`,
+    'The chef accepted your counter offer. Complete payment to confirm the order.',
+  );
+
   res.status(201).json(order);
 });
 
@@ -433,7 +465,7 @@ router.post('/:id/chef-reject-counter', requireAuth, async (req: AuthRequest, re
   if (!quoteId) return res.status(400).json({ error: 'Quote id required' });
   const quote = await prisma.quote.findUnique({
     where: { id: quoteId },
-    select: { chefId: true, status: true, counterOffer: true },
+    select: { chefId: true, status: true, counterOffer: true, requestId: true, request: { select: { userId: true } } },
   });
   if (!quote) {
     res.status(404).json({ error: 'Quote not found' });
@@ -452,6 +484,11 @@ router.post('/:id/chef-reject-counter', requireAuth, async (req: AuthRequest, re
     where: { id: quoteId },
     data: { status: 'REJECTED' },
   });
+  notifyRequestBuyer(
+    { buyerId: quote.request.userId, requestId: quote.requestId },
+    'Counter offer declined',
+    'The chef declined your counter offer.',
+  );
   res.json(updated);
 });
 

@@ -8,6 +8,7 @@ import {
   parseCashfreeWebhook,
   verifyCashfreeWebhookSignature,
 } from '../lib/cashfree';
+import { notifyUsersByIds } from '../lib/fcm';
 import prisma from '../lib/prisma';
 
 const router = Router();
@@ -24,6 +25,7 @@ async function syncCashfreeOrderById(cashfreeOrderId: string) {
       select: {
         id: true,
         requestId: true,
+        buyerId: true,
         chefId: true,
         finalPrice: true,
         paymentStatus: true,
@@ -31,6 +33,7 @@ async function syncCashfreeOrderById(cashfreeOrderId: string) {
         advancePaid: true,
         cashfreeOrderId: true,
         cashfreeBalanceOrderId: true,
+        request: { select: { dishName: true, delivery: true } },
       },
     }),
     prisma.dishOffer.findFirst({
@@ -51,6 +54,7 @@ async function syncCashfreeOrderById(cashfreeOrderId: string) {
         advancePaid: true,
         cashfreeOrderId: true,
         cashfreeBalanceOrderId: true,
+        dishName: true,
       },
     }),
   ]);
@@ -75,7 +79,7 @@ async function syncCashfreeOrderById(cashfreeOrderId: string) {
   if (orderRecord) {
     const isBalance = orderRecord.cashfreeBalanceOrderId === cashfreeOrderId;
     if (isBalance) {
-      await prisma.order.update({
+      const updatedOrder = await prisma.order.update({
         where: { id: orderRecord.id },
         data: {
           paymentGateway: 'CASHFREE',
@@ -87,8 +91,14 @@ async function syncCashfreeOrderById(cashfreeOrderId: string) {
           balancePaymentConfirmedAt: new Date(),
         },
       });
+      notifyUsersByIds(
+        [updatedOrder.buyerId],
+        `${orderRecord.request.dishName} order confirmed`,
+        'Your balance payment was received and the order is confirmed.',
+        { type: 'BUYER_ACTIVITY', entityType: 'REQUEST', entityId: orderRecord.requestId },
+      ).catch(() => {});
     } else if (orderRecord.paymentStatus === 'HOLD') {
-      await prisma.order.update({
+      const updatedOrder = await prisma.order.update({
         where: { id: orderRecord.id },
         data: {
           paymentGateway: 'CASHFREE',
@@ -102,6 +112,12 @@ async function syncCashfreeOrderById(cashfreeOrderId: string) {
           paymentConfirmedAt: new Date(),
         },
       });
+      notifyUsersByIds(
+        [updatedOrder.buyerId],
+        `${orderRecord.request.dishName} order confirmed`,
+        'Payment was received and your request order is confirmed.',
+        { type: 'BUYER_ACTIVITY', entityType: 'REQUEST', entityId: orderRecord.requestId },
+      ).catch(() => {});
       await prisma.user.update({
         where: { id: orderRecord.chefId },
         data: { totalOrders: { increment: 1 } },
