@@ -9,6 +9,38 @@ import prisma from '../lib/prisma';
 const router = Router();
 
 const REFRESH_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const REVIEW_LOGIN_EMAIL = process.env.REVIEW_LOGIN_EMAIL?.trim().toLowerCase();
+const REVIEW_LOGIN_OTP = process.env.REVIEW_LOGIN_OTP?.trim();
+const REVIEW_LOGIN_NAME = process.env.REVIEW_LOGIN_NAME?.trim() || 'Play Review User';
+const REVIEW_LOGIN_PHONE = process.env.REVIEW_LOGIN_PHONE?.trim() || '9000000001';
+
+function isReviewLoginEmail(email: string): boolean {
+  return Boolean(REVIEW_LOGIN_EMAIL) && email === REVIEW_LOGIN_EMAIL;
+}
+
+function isValidReviewOtp(email: string, otp: string): boolean {
+  return Boolean(REVIEW_LOGIN_OTP) && isReviewLoginEmail(email) && otp === REVIEW_LOGIN_OTP;
+}
+
+async function ensureReviewBuyerAccount(email: string) {
+  const existingUser = await prisma.user.findUnique({ where: { email } });
+  if (existingUser) {
+    return existingUser;
+  }
+
+  const randomPassword = await bcrypt.hash(randomBytes(32).toString('hex'), 12);
+  return prisma.user.create({
+    data: {
+      name: REVIEW_LOGIN_NAME,
+      phone: REVIEW_LOGIN_PHONE,
+      email,
+      password: randomPassword,
+      role: 'BUYER',
+      city: 'Kolkata',
+      location: 'Kolkata, West Bengal',
+    },
+  });
+}
 
 function generatedBuyerEmail(phone: string): string {
   return `buyer-${createHash('sha256').update(`email:${phone}`).digest('hex').slice(0, 20)}@buyer.local`;
@@ -155,6 +187,15 @@ router.post('/send-otp', async (req, res) => {
   }
 
   const email = parsed.data.email.trim().toLowerCase();
+  if (isReviewLoginEmail(email)) {
+    res.json({
+      sent: true,
+      reviewMode: true,
+      message: 'Review login is enabled for this email. Use the configured reusable OTP.',
+    });
+    return;
+  }
+
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -187,19 +228,26 @@ router.post('/verify-otp', async (req, res) => {
   }
 
   const email = parsed.data.email.trim().toLowerCase();
-  const record = await prisma.emailOtp.findFirst({
-    where: { email, otp: parsed.data.otp, used: false, expiresAt: { gt: new Date() } },
-    orderBy: { createdAt: 'desc' },
-  });
+  const usingReviewOtp = isValidReviewOtp(email, parsed.data.otp);
+  const record = usingReviewOtp
+    ? null
+    : await prisma.emailOtp.findFirst({
+        where: { email, otp: parsed.data.otp, used: false, expiresAt: { gt: new Date() } },
+        orderBy: { createdAt: 'desc' },
+      });
 
-  if (!record) {
+  if (!usingReviewOtp && !record) {
     res.status(401).json({ error: 'Invalid or expired code. Please try again.' });
     return;
   }
 
-  await prisma.emailOtp.update({ where: { id: record.id }, data: { used: true } });
+  if (record) {
+    await prisma.emailOtp.update({ where: { id: record.id }, data: { used: true } });
+  }
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  const user = usingReviewOtp
+    ? await ensureReviewBuyerAccount(email)
+    : await prisma.user.findUnique({ where: { email } });
   if (user) {
     if (!user.isActive) {
       res.status(403).json({ error: 'Account deactivated' });
